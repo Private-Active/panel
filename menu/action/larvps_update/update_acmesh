@@ -1,0 +1,2 @@
+#!/bin/bash
+/root/.acme.sh/acme.sh --upgrade

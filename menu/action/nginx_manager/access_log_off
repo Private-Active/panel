@@ -1,0 +1,44 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+echo "-------------------------------------------------------------------------"
+echo "Tat va Xoa Access Log cua domain"
+echo "-------------------------------------------------------------------------"
+echo ""
+
+choose_domain
+
+if [ "$domain" = "" ]; then
+    clear
+    echo "Bạn chưa nhập Domain."
+    echo
+    action_nginx_manager
+fi
+
+if [ "$domain" = "${domain/.}" ]; then
+    clear
+    echo "Domain bạn nhập không đúng định dạng."
+    echo
+    action_nginx_manager
+fi
+
+# kiem tra ton tai
+path="/etc/larvps/user/.$domain.conf"
+if [[ ! -f "$path" ]]; then
+    clear
+    echo "Domain không tồn tại trên VPS."
+    echo
+    action_nginx_manager
+fi
+
+username=$(get_user $domain)
+
+sed -i "s/access_log/#access_log/" "/etc/nginx/conf.d/$domain.conf"
+sed -i "s/access_log on/access_log off/" "/etc/nginx/conf.d/$domain.conf"
+
+restart_nginx
+
+rm -f "/home/$username/$domain/logs/access.log"
+
+echo "Dat tat va xoa access log"
+

@@ -1,0 +1,177 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+echo "//---------------------------------------------------------------------//"
+echo "1. Quan ly Domain  > Thay doi domain"
+echo "-------------------------------------------------------------------------"
+echo ""
+
+
+echo "Chon Domain"
+
+choose_domain
+
+if [ "$domain" = '' ]; then
+    clear
+    echo "Bạn chưa nhập Domain."
+    echo
+    action_application
+fi
+
+if [ "$domain" = "${domain/.}" ]; then
+    clear
+    echo "Domain bạn nhập không đúng định dạng."
+    echo
+    action_application
+fi
+
+username=$(get_user $domain)
+
+
+sed -i "/\[/d" /etc/larvps/user/.${domain}.conf
+. /etc/larvps/user/.${domain}.conf
+
+read -p "Nhap ten domain/subdomain moi: " new_domain
+new_username=$(get_user $new_domain)
+
+# Tạo user và đổi pass
+useradd $new_username
+
+# sleep 5
+# pass ftp
+change_pass=$(expect -c "
+spawn passwd $new_username
+expect \"New password\"
+send \"$password_sftp\r\"
+expect \"Retype new password\"
+send \"$password_sftp\r\"
+expect eof
+")
+echo $change_pass
+
+## pass http auth
+pass_secure=$(expect -c "
+spawn htpasswd /usr/share/nginx/larvps/passwd/.htpasswd $new_username
+expect \"New password\"
+send \"$password\r\"
+expect \"Retype new password\"
+send \"$password\r\"
+expect eof
+")
+echo $pass_secure
+
+# add group
+usermod -G sftp_users $new_username
+
+# sleep 50
+# change folder
+# mv /home/${username} /home/${new_username}
+# 
+#Tạo thư mục quản lý web
+mkdir -p /home/$new_username/$new_domain
+rm -rf /home/$new_username/$new_domain/*
+mv -f /home/${username}/${domain}/* /home/${new_username}/${new_domain}
+
+# sleep 5
+# sleep 50
+# 
+# 
+chmod 755 /home/$new_username
+chmod 755 /home/$new_username/$new_domain/public_html
+chmod 700 /home/$new_username/$new_domain/logs
+chmod 700 /home/$new_username/$new_domain/tmp
+chmod 700 /home/$new_username/$new_domain/ssl
+chmod 700 /home/$new_username/$new_domain/session
+chmod 700 /home/$new_username/$new_domain/restore
+
+chown root:root /home/$new_username
+chown -hR $new_username:$new_username /home/$new_username/$new_domain/
+chmod g+s /home/$new_username/$new_domain/public_html
+
+chcon -R -t httpd_sys_content_t /home/$new_username/$new_domain/public_html
+chcon -R -t httpd_sys_rw_content_t /home/$new_username/$new_domain/public_html
+
+for (( n = 9001; n <= 9500; n++ )); do
+    x=$(grep -rnw '/etc/php-fpm.d/' -e $n >> /dev/null 2>&1 && echo 1)
+    if [[ ! $x ]]; then
+       port_listen=$n
+       break
+    fi
+done
+# sleep 5
+
+#rep db
+
+wp search-replace "http://${domain}" "http://${new_domain}" --path="/home/$new_username/$new_domain/public_html" --allow-root
+wp search-replace "https://${domain}" "https://${new_domain}" --path="/home/$new_username/$new_domain/public_html" --allow-root
+
+
+userdel -f -r $username
+htpasswd -D /usr/share/nginx/larvps/passwd/.htpasswd $username
+
+rm -f /etc/nginx/conf.d/$domain.conf
+rm -f /etc/php-fpm.d/$domain.conf
+rm -f /etc/larvps/user/.$domain.conf
+
+
+
+# sleep 5
+# lưu config user
+cat > "/etc/larvps/user/.$new_domain.conf" <<END
+username=$new_username
+password=$password
+password_sftp=$password_sftp
+domain=$new_domain
+db_name=$db_name
+db_user=$db_user
+db_password=$db_password
+phpMyAdmin=http://$ip:$port_admin/phpmyadmin
+public_html=/home/$new_username/$new_domain/public_html
+END
+
+
+#phpfpm
+. /etc/larvps/menu/action/domain/template/phpfpm $new_domain $new_username $port_listen
+
+#nginx
+if [[ -d /root/.acme.sh/${new_domain} ]]; then
+. /etc/larvps/menu/action/domain/template/nginx_acme $new_domain $new_username $port_listen
+else
+. /etc/larvps/menu/action/domain/template/nginx $new_domain $new_username $port_listen
+fi
+
+restart_php
+restart_nginx
+
+
+clear
+echo
+echo "Cam on ban da su dung LarVPS"
+echo "Ban da them domain thanh cong. Hay luu lai thong tin de su dung ve sau"
+echo "-------------------------------------------------------------------------"
+echo "1.  Domain                : $new_domain"
+echo "2.  DB_Name               : $db_name"
+echo "3.  DB_User               : $db_user"
+echo "4.  DB_Password           : $db_password"
+echo "6.  PhpMyAdmin            : http://$ip:$port_admin/phpmyadmin"
+echo "7.  Username              : $new_username"
+echo "8.  Password_Auth         : $password"
+echo "9.  Password_SFTP         : $password_sftp"
+echo "10. SFTP Host             : $ip"
+echo "11. SFTP Port             : $port_ssh"
+echo "12. Upload source         : /home/$new_username/$new_domain/public_html"
+echo "-------------------------------------------------------------------------"
+echo
+
+if [[ ! -d /root/.acme.sh/${new_domain} ]]; then
+    read -p "Ban co muon cai dai Let's SSL (y/n)?" confirm_lets
+
+    if [[ "$confirm_lets" == y ]]; then
+    . /etc/larvps/menu/action/lets_encrypt/create_acme
+    fi
+fi
+
+action_domain
+
+
+

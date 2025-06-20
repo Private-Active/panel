@@ -1,0 +1,71 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+domain=$1
+domain_redirect=$2
+
+PATH_CER="/root/.acme.sh/${domain}/fullchain.cer"
+PATH_KEY="/root/.acme.sh/${domain}/${domain}.key"
+
+
+#config nginx
+cat > "/etc/nginx/conf.d/${domain}.conf" <<END
+
+server {
+    listen 443 ssl http2;
+    server_name www.${domain};
+
+    location ~ /.well-known/acme-challenge/ {
+        allow all;
+        root /usr/share/nginx/html;
+    }
+
+    ssl_certificate ${PATH_CER};
+    ssl_certificate_key ${PATH_KEY};
+    include /etc/nginx/ssl_config.conf;
+    
+    return 301 \$scheme://$domain_redirect\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${domain};
+    charset utf-8;
+
+    location ~ /.well-known/acme-challenge/ {
+        allow all;
+        root /usr/share/nginx/html;
+    }
+
+    ssl_certificate ${PATH_CER};
+    ssl_certificate_key ${PATH_KEY};
+    include /etc/nginx/ssl_config.conf;
+
+    return 301 \$scheme://$domain_redirect\$request_uri;
+}
+
+server {
+    listen 80;
+    server_name www.${domain};
+
+    location ~ /.well-known/acme-challenge/ {
+        allow all;
+        root /usr/share/nginx/html;
+    }
+
+    return 301 \$scheme://${domain_redirect}\$request_uri;
+}
+
+server {
+    listen 80;
+    server_name ${domain};
+    charset utf-8;
+
+    location ~ /.well-known/acme-challenge/ {
+        allow all;
+        root /usr/share/nginx/html;
+    }
+
+    return 301 \$scheme://${domain_redirect}\$request_uri;
+}
+END

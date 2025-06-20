@@ -1,0 +1,64 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+clear
+echo "--//---------------------------------------------------------------------"
+echo "21. Thiep lap Paid SSL > Them SSL Key"
+echo "/-----------------------------------------------------------------------/"
+echo
+
+if [[ ! -f '/usr/bin/jq' ]]; then
+   yum install jq -y
+fi
+
+#dhparam
+if [[ ! -f /etc/ssl/certs/dhparam.pem ]]; then
+echo "Dang them dhparam, vui long doi, viec nay ton kha nhieu thoi gian, va chi lam 1 lan duy nhat."
+openssl dhparam -out /etc/ssl/certs/dhparam.pem 2048
+echo "hoan thanh"
+clear
+fi
+
+echo "LarVPS su dung SSL Key của LarVps su dung Sectigo va GoGet."
+echo
+choose_domain
+
+if [ "$domain" = "" ]; then
+    clear
+    echo "Ban chua nhap Domain."
+    echo
+    action_ssl_manager
+fi
+
+if [ "$domain" = "${domain/.}" ]; then
+    clear
+    echo "Domain ban nhap khong dung dinh dang."
+    echo
+    action_ssl_manager
+fi
+
+# kiem tra ton tai
+path="/etc/larvps/user/.$domain.conf"
+if [[ ! -f "$path" ]]; then
+    clear
+    echo "Domain khong ton tai tren VPS."
+    echo
+    action_ssl_manager
+fi
+username=${domain//[-._]/}
+
+
+
+if [[  "$email_paid_ssl" = "" ]]; then
+read -p "Vui long nhap Email thiet lap cho Paid SSL: " email_paid_ssl 
+sed -i "/email_paid_ssl/d" /etc/larvps/.larvps.conf
+echo "email_paid_ssl=$email_paid_ssl" >> /etc/larvps/.larvps.conf
+fi
+if [[  "$email_paid_ssl" = "" ]]; then
+exit
+fi
+mkdir -p "/home/${username}/${domain}/public_html/.well-known/pki-validation"
+. /etc/larvps/menu/action/ssl_manager/create_template "free" "$domain" "$email_paid_ssl"
+echo
+sleep 3
+action_ssl_manager

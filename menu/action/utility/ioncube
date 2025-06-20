@@ -1,0 +1,60 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+echo "--//---------------------------------------------------------------------"
+echo "11. Quan ly Utility > IonCube"
+echo "/-----------------------------------------------------------------------/"
+
+cd
+wget http://downloads3.ioncube.com/loader_downloads/ioncube_loaders_lin_x86-64.tar.gz
+tar xzf ioncube_loaders_lin_x86-64.tar.gz
+yes | cp -rf ioncube/ioncube_loader_lin_7.4.so /usr/lib64/php/modules/
+yes | cp -rf ioncube/ioncube_loader_lin_8.1.so /usr/lib64/php/modules/
+yes | cp -rf ioncube/ioncube_loader_lin_8.2.so /usr/lib64/php/modules/
+cd
+rm -rf ioncube_loaders_lin_x86-64.tar.gz
+rm -rf ioncube
+cd
+
+
+if [[ `cat /etc/php.d/00-larvps-custom.ini | grep "ioncube"` ]]; then
+sed -i '/ioncube/d' /etc/php.d/00-larvps-custom.ini
+fi
+PHPVERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
+#PHPVERSION="$(php -v|grep --only-matching --perl-regexp "(PHP )\d+\.\\d+\.\\d+"|cut -c 5-7)"
+echo "zend_extension = /usr/lib64/php/modules/ioncube_loader_lin_${PHPVERSION}.so" >> /etc/php.d/00-larvps-custom.ini
+service php-fpm restart
+
+echo "Da bat ionCube"
+action_utility
+
+#
+#
+#if [[ `cat /etc/php.d/00-larvps-custom.ini | grep "ioncube"` ]]; then
+#echo "ionCube: Active"
+#
+#read -p "Ban co muon tat? (y/n): " confirm
+#if [[ "$confirm" = "y" ]]; then
+#sed -i '/ioncube/d' /etc/php.d/00-larvps-custom.ini
+#service php-fpm restart
+#clear
+#echo "Da tat ionCube"
+#action_utility
+#fi
+#
+#else
+#echo "ionCube: Inactive"
+#
+#read -p "Ban co muon bat? (y/n): " confirm
+#if [[ "$confirm" = "y" ]]; then
+#echo >> /etc/php.d/00-larvps-custom.ini
+#echo "zend_extension = /usr/local/ioncube/ioncube_loader_lin_7.4.so" >> /etc/php.d/00-larvps-custom.ini
+#service php-fpm restart
+#clear
+#echo "Da bat ionCube"
+#action_utility
+#fi
+#
+#fi
+
+action_utility

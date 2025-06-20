@@ -1,0 +1,33 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+clear
+echo "--//---------------------------------------------------------------------"
+echo "2. Quan ly ZeroSSL > Thong tin cac domain ZeroSSL"
+echo "-------------------------------------------------------------------------"
+echo "Huong dan: "
+echo "/-----------------------------------------------------------------------/"
+echo
+
+echo "LarVPS se tu renew khi domain con 30 ngay:"
+echo "ZeroSSL ban dang dung la phien ban Premium duoc LarVPS tai tro:"
+echo "Trang chu ZeroSSL: https://zerossl.com/"
+echo 
+
+if [[ ! -d /etc/nginx/zerossl/ ]]; then
+echo "Khong co domain nao cai dat SSL"
+sleep 3
+action_zero_ssl
+fi
+
+echo "Danh sach da cai ZeroSSL:"
+echo
+for domain in `ls -A /etc/nginx/zerossl/`; do    
+expires=$(cat /etc/nginx/zerossl/${domain}/${domain}.conf | grep "expires" | cut -f2 -d"=")
+domain_list=$(cat /etc/nginx/zerossl/${domain}/${domain}.conf | grep "domain" | cut -f2 -d"=")
+echo "-------------------------------------------------------------------------"
+echo "$domain - Han: $expires"
+done  
+echo echo
+sleep 3
+action_zero_ssl

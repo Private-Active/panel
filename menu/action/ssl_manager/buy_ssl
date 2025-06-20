@@ -1,0 +1,126 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+clear
+echo "--//---------------------------------------------------------------------"
+echo "21. Thiep lap Paid SSL > Mua SSL tra phi domain"
+echo "/-----------------------------------------------------------------------/"
+echo
+
+if [[ ! -f '/usr/bin/jq' ]]; then
+   yum install jq -y
+fi
+
+#dhparam
+if [[ ! -f /etc/ssl/certs/dhparam.pem ]]; then
+echo "Dang them dhparam, vui long doi, viec nay ton kha nhieu thoi gian, va chi lam 1 lan duy nhat."
+openssl dhparam -out /etc/ssl/certs/dhparam.pem 2048
+echo "hoan thanh"
+clear
+fi
+
+echo
+choose_domain
+
+if [ "$domain" = "" ]; then
+    clear
+    echo "Ban chua nhap Domain."
+    echo
+    action_ssl_manager
+fi
+
+if [ "$domain" = "${domain/.}" ]; then
+    clear
+    echo "Domain ban nhap khong dung dinh dang."
+    echo
+    action_ssl_manager
+fi
+
+# kiem tra ton tai
+path="/etc/larvps/user/.$domain.conf"
+if [[ ! -f "$path" ]]; then
+    clear
+    echo "Domain khong ton tai tren VPS."
+    echo
+    action_ssl_manager
+fi
+username=${domain//[-._]/}
+
+
+echo "Dat Mua tai: larvps.com"
+read -p "Nhap SSL Key cua ban: " key
+
+if [[ "$name_paid_ssl" = "" ]]; then
+read -p "Nhap Ho Ten (vidu: Nguyen Van A): " name_paid_ssl
+sed -i "/name_paid_ssl/d" /etc/larvps/.larvps.conf
+echo "name_paid_ssl='$name_paid_ssl'" >> /etc/larvps/.larvps.conf
+fi
+
+if [[ "$email_paid_ssl" = "" ]]; then
+read -p "Nhap Email: " email_paid_ssl
+sed -i "/email_paid_ssl/d" /etc/larvps/.larvps.conf
+echo "email_paid_ssl=$email_paid_ssl" >> /etc/larvps/.larvps.conf
+fi
+
+if [[ "$phone_paid_ssl" = "" ]]; then
+read -p "Nhap so dien thoai (vidu: 09999999): " phone_paid_ssl
+sed -i "/phone_paid_ssl/d" /etc/larvps/.larvps.conf
+echo "phone_paid_ssl=$phone_paid_ssl" >> /etc/larvps/.larvps.conf
+fi
+
+
+
+echo "Thong tin dang ky Paid SSL"
+echo "Domain: ${domain}"
+echo "Name: ${name_paid_ssl}"
+echo "Email: ${email_paid_ssl}"
+echo "Phone: ${phone_paid_ssl}"
+
+echo
+read -p "Ban co muon thay doi thong tin? (y/n): " confirm_info
+
+if [[ "$confirm_info" = "y" ]]; then
+read -p "Nhap Ho ten: " name_paid_ssl
+read -p "Nhap Email: " email_paid_ssl
+read -p "Nhap Phone: " phone_paid_ssl
+fi
+
+echo
+read -p "Xac nhan cai dat Paid SSL cho domain ${domain} (y/n): " confirm
+
+if [[ "$confirm" != "y" ]]; then
+sleep 3
+action_ssl_manager
+fi
+mkdir -p "/home/${username}/${domain}/public_html/.well-known/pki-validation"
+. /etc/larvps/menu/action/ssl_manager/create_template "paid" "$domain" "$email_paid_ssl" "$key" "$phone_paid_ssl" "$name_paid_ssl"
+
+
+clear
+echo "Kiem tra trang thai Http Status Code:"
+echo
+statusCode=$(curl -H 'Pragma: no-cache' --write-out %{http_code} --silent --output /dev/null "http://${domain}")
+echo "http://${domain}: (${statusCode})"
+statusCode=$(curl -H 'Pragma: no-cache' --write-out %{http_code} --silent --output /dev/null "https://${domain}")
+echo "https://${domain}: (${statusCode})"
+is_subdomain "$domain"
+if [[ $IS_SUBDOMAIN = "n" ]]; then
+statusCode=$(curl -H 'Pragma: no-cache' --write-out %{http_code} --silent --output /dev/null "http://www.${domain}")
+echo "http://www.${domain}: (${statusCode})"
+statusCode=$(curl -H 'Pragma: no-cache' --write-out %{http_code} --silent --output /dev/null "https://www.${domain}")
+echo "https://www.${domain}: (${statusCode})"
+fi
+echo
+echo "------------------------------------------"
+echo "Da cap Paid SSL thanh cong"
+echo "https://${domain}"
+echo "------------------------------------------"
+echo
+echo "Mua SSL Key: https://larvps.com/pages/ssl (SSL tra phi)"
+echo "Cam on ban da chon LarVPS lam cong cu quan ly VPS."
+echo
+
+
+echo
+sleep 15
+action_ssl_manager

@@ -1,0 +1,49 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+
+if [[ -f /etc/larvps/.key.conf ]]; then
+. /etc/larvps/.key.conf
+count_domain=$(find /etc/larvps/user -type f | wc -l);
+result=$(curl -s https://larvps.com/keys/check-key/${key}/${count_domain} )
+
+if [[ "$result" != "1" ]]; then
+clear
+echo "-----------------------------------"
+echo $result
+echo "-----------------------------------"
+sleep 5
+
+wget "https://larvps.com/scripts/menu.zip" -O menu.zip
+
+if [[ $? -ne 0 ]]; then
+    echo "Cap nhat that bai"
+    sleep 3;
+    larvps
+fi
+
+unzip -o menu.zip
+clear
+cd menu
+mv -f larvps /usr/bin/
+rm -rf /etc/larvps/menu
+cd ..
+mv menu /etc/larvps/
+rm -rf menu.zip
+rm -rf __MACOSX
+
+rm -f /etc/larvps/.key.conf
+fi
+
+fi
+
+
+latest_version=$(curl -s https://larvps.com/scripts/info | grep "latest_version=" | cut -f2 -d'=')
+if [[ "$latest_version" != "$version" ]]; then
+   clear
+   echo "==//===================================================================="
+   echo "Thong bao cap nhat - Ban dang su dung: v$version"
+   echo "-------------------------------------------------------------------------" 
+   echo "Da co ban cap nhat v$latest_version."
+   echo "Go lenh: larvps update hoac 01 de cap nhat."
+   echo "/-----------------------------------------------------------------------/"
+fi

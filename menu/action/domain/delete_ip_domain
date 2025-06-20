@@ -1,0 +1,13 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+clear
+. /etc/larvps/menu/action/domain/template/nginx_default
+
+restart_nginx
+clear
+sleep 3
+echo "Da khoi phuc thanh cong"
+
+action_domain
+

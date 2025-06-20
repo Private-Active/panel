@@ -1,0 +1,56 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+echo
+echo "==//====================================================================="
+echo "21. Thiet lap SSL Paid"
+echo "/-----------------------------------------------------------------------/"
+echo
+options=(
+    "Cai dat SSL Key mien phi (1 thang)"
+    "Cai dat SSL Key tra phi cua LarVPS (12 thang)"
+    "Cai dat SSL (Sectigo/GogetSSL/SSLS...)"
+    "Chuyen WWW thay Root Domain (abc.com => www.abc.com)"
+    "Redirect 301 Domain A sang B"
+    "Khoi dong lai Nginx"
+    "Phuc hoi Nginx cua Paid SSL"
+    "Cai dat lai DH Parameters"
+)
+PS3="
+-//- Nhap lua chon cua ban (1-${#options[@]}) [0=Thoat]: "
+select opt in "${options[@]}"
+do
+    case $opt in
+        "${options[0]}")
+            '/etc/larvps/menu/action/ssl_manager/create_free'
+            ;;
+        "${options[1]}")
+            '/etc/larvps/menu/action/ssl_manager/buy_ssl'
+            ;;
+         "${options[2]}")
+            '/etc/larvps/menu/action/ssl_manager/create'
+            ;;
+         "${options[3]}")
+            '/etc/larvps/menu/action/ssl_manager/www'
+            ;;
+        "${options[4]}")
+            '/etc/larvps/menu/action/ssl_manager/redirect'
+            ;;
+        "${options[5]}")
+			clear
+			restart_nginx
+            ;;
+        "${options[6]}")
+            '/etc/larvps/menu/action/ssl_manager/restore'
+            ;;
+        "${options[7]}")
+            clear
+            echo "Dang them dhparam, vui long doi, viec nay ton kha nhieu thoi gian, va chi lam 1 lan duy nhat."
+            rm -rf /etc/ssl/certs/dhparam.pem
+            openssl dhparam -out /etc/ssl/certs/dhparam.pem 2048
+            echo "hoan thanh"
+        
+            ;;
+        *) larvps ;;
+    esac
+done

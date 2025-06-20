@@ -1,0 +1,26 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+clear
+echo "-------------------------------------------------------------------------"
+echo "Cap nhat MariaDB ban moi nhat"
+echo "-------------------------------------------------------------------------"
+echo ""
+read -p "Xac nhan cap nhat len mariadb 10.6.x: " confirm
+if [[ "$confirm" = 'y' ]]; then
+
+curl -LsS -O https://downloads.mariadb.com/MariaDB/mariadb_repo_setup
+bash mariadb_repo_setup --mariadb-server-version=10.5
+yum makecache -y
+yum repolist -y
+dnf module reset mariadb -y
+yum install MariaDB-server MariaDB-client MariaDB-backup -y
+systemctl start mariadb
+systemctl enable mariadb
+systemctl status mariadb
+
+sleep 3
+clear
+echo "Da cap nhat MariaDb 10.6.x"
+fi
+action_larvps_update

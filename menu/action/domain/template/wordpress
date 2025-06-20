@@ -1,0 +1,66 @@
+#!/bin/bash
+domain=$1
+username=$2
+db_name=$3
+db_user=$4
+db_password=$5
+prefix=$6
+
+# rm -rf /home/$username/$domain/public_html/*
+# cd /home/$username/$domain/public_html/
+# wp core download --allow-root
+# wp config create --dbname="$db_name" --dbuser="$db_user" --dbpass="$db_password" --dbprefix="$prefix" --allow-root
+
+cd ~
+rm -rf /home/$username/$domain/public_html/*
+curl -O https://wordpress.org/latest.tar.gz
+tar -zxvf latest.tar.gz
+cd wordpress
+cp -rf . /home/$username/$domain/public_html
+cd ..
+rm -rf wordpress
+rm -rf latest.tar.gz
+
+cd /home/$username/$domain/public_html
+
+#set WP salts
+SALT=$(curl -L https://api.wordpress.org/secret-key/1.1/salt/)
+
+cat > "/home/$username/$domain/public_html/wp-config.php" <<END
+<?php
+define( 'WP_CACHE', true );
+define('FS_METHOD', 'direct');
+define( 'DB_NAME', '${db_name}' );
+define( 'DB_USER', '${db_user}' );
+define( 'DB_PASSWORD', '${db_password}' );
+define( 'DB_HOST', 'localhost' );
+define( 'DB_CHARSET', 'utf8mb4' );
+define( 'DB_COLLATE', '' );
+define('DISABLE_WP_CRON', false);
+
+$SALT
+
+\$table_prefix = '${prefix}_';
+
+define( 'WP_DEBUG', false );
+
+if ( ! defined( 'ABSPATH' ) ) {
+    define( 'ABSPATH', dirname( __FILE__ ) . '/' );
+}
+require_once( ABSPATH . 'wp-settings.php' );
+
+END
+
+#create robots
+cat > "/home/$username/$domain/public_html/robots.txt" <<END
+User-agent: *
+Disallow: /wp-admin/
+Allow: /wp-admin/admin-ajax.php
+END
+
+# set chown
+chown -R $username:$username /home/$username/$domain/public_html
+# chmod 400 /home/$username/$domain/public_html/wp-config.php
+rm -f /home/$username/$domain/public_html/readme.html
+rm -f /home/$username/$domain/public_html/license.txt
+rm -f /home/$username/$domain/public_html/wp-config-sample.php

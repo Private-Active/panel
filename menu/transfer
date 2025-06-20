@@ -1,0 +1,223 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+. /etc/larvps/menu/active_check
+
+P1=${1}
+P2=${2}
+P3=${3}
+P4=${4}
+P5=${5}
+P6=${6}
+P7=${7}
+P8=${8}
+
+
+domain=${P1}
+db_name=${P2}
+db_user=${P3}
+db_password=${P4}
+
+USERNAME=${P5}
+PASSWORD=${P6}
+URL=${P7}
+FILE=${P8}
+
+username=$(get_user $domain)
+
+
+mkdir -p /usr/share/nginx/larvps/transfer
+mkdir -p /home/$username/$domain/public_html/
+
+rm -rf /usr/share/nginx/larvps/transfer/*
+rm -rf /home/$username/$domain/public_html/*
+
+cd /usr/share/nginx/larvps/transfer
+wget --http-user=${USERNAME} --http-password=${PASSWORD} ${URL} 
+# restore ${DOMAIN} ${FILE} local
+mv $FILE /$FILE
+cd /
+tar -xzvf $FILE
+cd /
+rm -rf $FILE
+
+#Config
+mv "/home/$username/$domain/public_html/.backup/config/.${domain}.conf" /etc/larvps/user
+
+. "/etc/larvps/user/.${domain}.conf"
+
+
+# Tạo user và đổi pass
+useradd $username
+
+# pass ftp
+change_pass=$(expect -c "
+spawn passwd $username
+expect \"New password\"
+send \"$password_sftp\r\"
+expect \"Retype new password\"
+send \"$password_sftp\r\"
+expect eof
+")
+echo $change_pass
+
+## pass http auth
+ass_secure=$(expect -c "
+spawn htpasswd /usr/share/nginx/larvps/passwd/.htpasswd $username
+expect \"New password\"
+send \"$password\r\"
+expect \"Retype new password\"
+send \"$password\r\"
+expect eof
+")
+echo $pass_secure
+
+clear
+
+#Tạo thư mục quản lý web
+mkdir -p /home/$username/$domain/public_html
+mkdir -p /home/$username/$domain/logs
+mkdir -p /home/$username/$domain/tmp
+mkdir -p /home/$username/$domain/ssl
+mkdir -p /home/$username/$domain/session
+mkdir -p /home/$username/$domain/restore
+
+
+chmod 755 /home/$username
+chmod 755 /home/$username/$domain/public_html
+chmod 700 /home/$username/$domain/logs
+chmod 700 /home/$username/$domain/tmp
+chmod 700 /home/$username/$domain/ssl
+chmod 700 /home/$username/$domain/session
+chmod 700 /home/$username/$domain/restore
+
+# chown
+chown root:root /home/$username
+chown -hR $username:$username /home/$username/$domain/
+chmod g+s /home/$username/$domain/public_html
+
+# add group
+usermod -G sftp_users $username
+
+cat > "/home/$username/$domain/public_html/index.html" <<END
+<h1>Ban da cai dat LarVPS thanh cong.</h1>
+END
+
+chcon -R -t httpd_sys_content_t /home/$username/$domain/public_html
+chcon -R -t httpd_sys_rw_content_t /home/$username/$domain/public_html
+
+for (( n = 9001; n <= 9500; n++ )); do
+    x=$(grep -rnw '/etc/php-fpm.d/' -e $n >> /dev/null 2>&1 && echo 1)
+    if [[ ! $x ]]; then
+       port_listen=$n
+       break
+    fi
+done
+
+
+#phpfpm
+. /etc/larvps/menu/action/domain/template/phpfpm $domain $username $port_listen
+
+
+# mariadb
+. /etc/larvps/menu/action/domain/template/mariadb $db_name $db_user $db_password
+
+db_url=$(ls -A /home/$username/$domain/public_html/database.sql.gz)
+zcat $db_url | mysql -u admin -p"$db_admin_password" $db_name
+echo "Da restore database $db_name thanh cong."
+sleep 1
+
+#lets
+mv "/home/$username/$domain/public_html/.backup/lets/${domain}" /root/.acme.sh/${domain}
+
+#Nginx
+mv "/home/$username/$domain/public_html/.backup/nginx/${domain}.conf" /etc/nginx/conf.d/${domain}.conf
+
+#SSL
+mv "/home/$username/$domain/public_html/.backup/ssl" /home/$username/$domain
+
+
+
+#change port
+sed -i "/127.0.0.1/d" /etc/nginx/conf.d/${domain}.conf
+sed -i "/fastcgi_params;/a fastcgi_pass  127.0.0.1:${port_listen};" /etc/nginx/conf.d/${domain}.conf
+
+
+# lưu config user
+cat > "/etc/larvps/user/.$domain.conf" <<END
+username=$username
+password=$password
+password_sftp=$password_sftp
+domain=$domain
+db_name=$db_name
+db_user=$db_user
+db_password=$db_password
+phpMyAdmin=http://$ip:$port_admin/phpmyadmin
+public_html=/home/$username/$domain/public_html
+END
+
+rm -rf /home/$username/$domain/public_html/database.sql.gz
+rm -rf /home/$username/$domain/public_html/.backup
+
+clear
+
+
+if [[ ! -f /etc/ssl/certs/dhparam.pem ]]; then
+echo "Dang them dhparam, vui long doi, viec nay ton kha nhieu thoi gian, va chi lam 1 lan duy nhat."
+openssl dhparam -out /etc/ssl/certs/dhparam.pem 2048
+echo "hoan thanh"
+fi
+
+
+if [[ ! -f "/root/.acme.sh/acme.sh" ]]; then
+
+wget -O -  https://get.acme.sh | sh -s email="xskno10@gmail.com"
+source  ~/.bashrc
+
+sed -i "/AUTO_UPGRADE=/d" /root/.acme.sh/account.conf
+echo 'AUTO_UPGRADE=1' >> /root/.acme.sh/account.conf
+
+mkdir -p /etc/nginx/ssl
+openssl dhparam -out /etc/nginx/ssl/dhparam.pem 2048
+
+echo "Da cai dat ACME."
+
+cat > "/etc/nginx/ssl_config.conf" <<END
+ssl_session_cache shared:SSL_LET:10m;
+ssl_session_timeout  10m;
+ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+ssl_ecdh_curve secp384r1;
+ssl_prefer_server_ciphers on;
+ssl_session_tickets off;
+resolver 8.8.8.8 valid=300s;
+resolver_timeout 5s;
+ssl_dhparam /etc/nginx/ssl/dhparam.pem;
+END
+
+
+
+fi
+
+restart_php
+restart_nginx
+ 
+
+echo
+echo "Cam on ban da su dung LarVPS"
+echo "Ban da them domain thanh cong. Hay luu lai thong tin de su dung ve sau"
+echo "-------------------------------------------------------------------------"
+echo "1.  Domain                : $domain"
+echo "2.  DB_Name               : $db_name"
+echo "3.  DB_User               : $db_user"
+echo "4.  DB_Password           : $db_password"
+echo "6.  PhpMyAdmin            : http://$ip:$port_admin/phpmyadmin"
+echo "7.  Username              : $username"
+echo "8.  Password_Auth         : $password"
+echo "9.  Password_SFTP         : $password_sftp"
+echo "10. SFTP Host             : $ip"
+echo "11. SFTP Port             : $port_ssh"
+echo "12. Upload source         : /home/$username/$domain/public_html"
+echo "-------------------------------------------------------------------------"
+echo
+action_domain
+

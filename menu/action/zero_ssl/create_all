@@ -1,0 +1,22 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+clear
+echo "--//---------------------------------------------------------------------"
+echo "2. Quan ly ZeroSSL > Cap SSL cho toan bo domain"
+echo "-------------------------------------------------------------------------"
+echo "Huong dan: https://larvps.com/articles/huong-dan-su-dung-zerossl-cap-free-ssl-trong-larvps"
+echo "/-----------------------------------------------------------------------/"
+echo
+
+read -p "Xac nhan cai dat ZeroSSL cho toan bo domain (y/n): " confirm
+
+if [[ "$confirm" = "y" ]]; then
+for entry in `ls -A /etc/larvps/user`; do
+domain=$( echo $entry | sed 's/^.//' | sed 's/\.conf//') 
+. /etc/larvps/menu/action/zero_ssl/create_template "$domain"
+done  
+fi
+
+sleep 3
+action_zero_ssl

@@ -1,0 +1,11 @@
+#!/bin/bash
+#version=1.60.0
+#wget https://downloads.rclone.org/v${version}/rclone-v${version}-linux-amd64.zip
+#unzip rclone-v${version}-linux-amd64.zip
+#cd rclone-v${version}-linux-amd64
+#sudo cp -r rclone /usr/sbin/
+#sudo chmod 755 /usr/sbin/rclone
+
+# sudo -v curl https://rclone.org/install.sh | sudo bash
+rclone selfupdate
+. /etc/larvps/menu/larvps_update

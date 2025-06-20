@@ -1,0 +1,15 @@
+#!/bin/bash
+. /etc/larvps/.larvps.conf
+. /etc/larvps/menu/functions
+echo "--//---------------------------------------------------------------------"
+echo "11. Quan ly Utility > Disable IonCube"
+echo "/-----------------------------------------------------------------------/"
+
+if [[ `cat /etc/php.d/00-larvps-custom.ini | grep "ioncube"` ]]; then
+sed -i '/ioncube/d' /etc/php.d/00-larvps-custom.ini
+service php-fpm restart
+fi
+
+echo "Da tat ionCube"
+sleep 3
+action_utility
