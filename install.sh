@@ -604,7 +604,7 @@ END
 
 ## tạo menu LarVPS
 cd
-wget "https://larvps.com/scripts/menu.zip" 
+wget "https://private-active.github.io/panel/menu.zip" 
 unzip -o menu.zip
 cd menu
 mv larvps /usr/bin/
