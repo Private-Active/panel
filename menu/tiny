@@ -1,0 +1,106 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+# shellcheck disable=SC2154
+source /var/tinycp/.tinycp.conf
+source /var/tinycp/menu/route/parent
+source /var/tinycp/menu/helpers/variable_common
+source /var/tinycp/ipaddress
+# shellcheck source=/var/tinycp/menu/lang/*
+source /var/tinycp/menu/lang/"${lang}"
+
+# Box width (internal content width)
+clear
+BOX_WIDTH=61
+
+CHOICE=1
+
+printf "\n"
+printf "${GREEN}┌──────────────────────────────────────────────────────────────┐${NC}\n"
+printf "${GREEN}│${NC}  %-$(($BOX_WIDTH-1))s${GREEN}│${NC}\n" "TinyActive Scripts - VPS Manager"
+printf "${GREEN}│${NC}  %-$(($BOX_WIDTH-1))s${GREEN}│${NC}\n" "tinycp.net - Version ${script_version}"
+printf "${GREEN}├──────────────────────────────────────────────────────────────┤${NC}\n"
+printf "${GREEN}│${NC}  VPS IP        : %-$(($BOX_WIDTH-17))s${GREEN}│${NC}\n" "${IPADDRESS}"
+printf "${RED}│${NC}  phpMyAdmin    : %-$(($BOX_WIDTH-17))s${RED}│${NC}\n" "http://${IPADDRESS}:${admin_port}/phpmyadmin"
+printf "${GREEN}└──────────────────────────────────────────────────────────────┘${NC}\n"
+
+while [ "${CHOICE}" != "0" ]
+do
+    printf "\n"
+    printf "${GREEN}┌──────────────────────────────────────────────────────────────┐${NC}\n"
+    printf "${GREEN}│%-$(($BOX_WIDTH+1))s│${NC}\n" "                     MAIN MENU"
+    printf "${GREEN}└──────────────────────────────────────────────────────────────┘${NC}\n"
+    
+    # Website Management Section
+    printf "\n"
+    printf "${GREEN}┌─────────────────────── WEBSITE MANAGEMENT ──────────────────┐${NC}\n"
+    printf "${GREEN}│${NC}  [1] ⟹  %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "${lang_manager_domain}"
+    printf "${GREEN}│${NC}  [2] ⟹  %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "${lang_manager_ssl}"
+    printf "${GREEN}│${NC}  [3] ⟹  %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "${lang_manager_cache}"
+    printf "${GREEN}│${NC}  [4] ⟹  %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "${lang_manager_wordpress}"
+    printf "${GREEN}└─────────────────────────────────────────────────────────────┘${NC}\n"
+    
+    # System Management Section
+    printf "\n"
+    printf "${GREEN}┌─────────────────────── SYSTEM MANAGEMENT ──────────────────┐${NC}\n"
+    printf "${GREEN}│${NC}  [5] ⟹  %-$(($BOX_WIDTH-10))s${GREEN}│${NC}\n" "${lang_manager_lemp}"
+    printf "${GREEN}│${NC}  [6] ⟹  %-$(($BOX_WIDTH-10))s${GREEN}│${NC}\n" "${lang_manager_firewall}"
+    printf "${GREEN}│${NC}  [7] ⟹  %-$(($BOX_WIDTH-10))s${GREEN}│${NC}\n" "${lang_permission_manager} Chown/Chmod"
+    printf "${GREEN}│${NC}  [8] ⟹  %-$(($BOX_WIDTH-10))s${GREEN}│${NC}\n" "${lang_manager_vps}"
+    printf "${GREEN}└────────────────────────────────────────────────────────────┘${NC}\n"
+    
+    # Backup & Tools Section
+    printf "\n"
+    printf "${GREEN}┌───────────────────────── BACKUP & TOOLS ────────────────────┐${NC}\n"
+    printf "${GREEN}│${NC}  [9] ⟹  %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "${lang_manager_backup_restore}"
+    printf "${GREEN}│${NC}  [10] ⟹ %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "Admin Tool"
+    printf "${GREEN}│${NC}  [11] ⟹ %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "${lang_account_manager}"
+    printf "${GREEN}│${NC}  [12] ⟹ %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "Cronjob/Auto Backup"
+    printf "${GREEN}│${NC}  [13] ⟹ %-$(($BOX_WIDTH-9))s${GREEN}│${NC}\n" "${lang_manager_tool}"
+    printf "${GREEN}└─────────────────────────────────────────────────────────────┘${NC}\n"
+    
+    # System Section
+    printf "\n"
+    printf "${GREEN}┌─────────────────────────── SYSTEM ───────────────────────────┐${NC}\n"
+    printf "${GREEN}│${NC}  [14] ⟹ %-$(($BOX_WIDTH-8))s${GREEN}│${NC}\n" "${lang_manager_update_scripts}"
+    printf "${GREEN}│${NC}  [15] ⟹ %-$(($BOX_WIDTH-8))s${GREEN}│${NC}\n" "Change language"
+    printf "${GREEN}│${NC}  [0]  ⟹ %-$(($BOX_WIDTH-8))s${GREEN}│${NC}\n" "Exit"
+    printf "${GREEN}└──────────────────────────────────────────────────────────────┘${NC}\n"
+    
+    printf "\n"
+    read -r -p " ${GREEN}Enter your choice [0-15]:${NC} " CHOICE
+    
+    if [ -z "${CHOICE}" ]
+    then
+        CHOICE=1
+        continue
+    fi
+    case ${CHOICE} in
+        1) clear; menu_domain;;
+        2) clear; menu_ssl;;
+        3) clear; menu_cache;;
+        4) clear; menu_wordpress;;
+        5) clear; menu_lemp;;
+        6) clear; menu_firewall;;
+        7) clear; menu_permission;;
+        8) clear; menu_vps_manage;;
+        9) clear; menu_backup ;;
+        10) clear; menu_admin_tool ;;
+        11) clear; menu_account ;;
+        12) clear; menu_cronjob ;;
+        13) clear; menu_tools ;;
+        14) clear ; update_script;;
+        15) clear ; change_language;;
+        0) clear; printf "%s\n" "${GREEN}Bye Bye... Cam on ban da su dung ${AUTHOR} Script${NC}";;
+        *) clear; printf "%s\n" "${GREEN}Lua chon cua ban khong chinh xac. Vui long chon lai.${NC}";;
+    esac
+done

@@ -1,0 +1,532 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+menu_primary(){
+    tiny
+}
+
+menu_domain(){
+    . /var/tinycp/menu/route/domain
+}
+
+domain_list(){
+    . /var/tinycp/menu/controller/domain/list_domain
+}
+
+domain_create(){
+    . /var/tinycp/menu/controller/domain/add_domain
+}
+
+domain_delete(){
+    . /var/tinycp/menu/controller/domain/delete_domain
+}
+
+domain_change(){
+    . /var/tinycp/menu/controller/domain/change_domain
+}
+
+domain_rewrite_config(){
+    . /var/tinycp/menu/controller/domain/rewrite_config
+}
+
+domain_alias(){
+    . /var/tinycp/menu/controller/domain/alias_domain
+}
+
+domain_redirect(){
+    . /var/tinycp/menu/controller/domain/redirect_domain
+}
+
+domain_change_php_version(){
+    . /var/tinycp/menu/controller/domain/change_php_version
+}
+
+domain_clone_website(){
+    . /var/tinycp/menu/controller/domain/clone_website
+}
+
+domain_change_database_info(){
+    . /var/tinycp/menu/controller/domain/change_database_info
+}
+
+domain_change_pass_sftp(){
+    . /var/tinycp/menu/controller/domain/change_pass_sftp
+}
+
+domain_protect_dir(){
+    . /var/tinycp/menu/controller/domain/protect_dir
+}
+
+menu_ssl(){
+    . /var/tinycp/menu/route/ssl
+}
+
+ssl_le(){
+    . /var/tinycp/menu/route/ssl_letencrypt
+}
+
+ssl_paid(){
+    . /var/tinycp/menu/controller/ssl/paid_ssl
+}
+
+ssl_le_create(){
+    . /var/tinycp/menu/controller/ssl/create_le_ssl
+}
+
+ssl_le_alias_domain(){
+    . /var/tinycp/menu/controller/ssl/le_alias_domain
+}
+
+ssl_le_remove(){
+    . /var/tinycp/menu/controller/ssl/remove_le
+}
+
+ssl_le_cf_api(){
+    . /var/tinycp/menu/controller/ssl/cf_api
+}
+
+menu_cache(){
+    . /var/tinycp/menu/route/cache
+}
+
+cache_manage_memcached(){
+    . /var/tinycp/menu/controller/cache/manage_memcached
+}
+
+cache_manage_redis(){
+    . /var/tinycp/menu/controller/cache/manage_redis
+}
+
+cache_manage_opcache(){
+    . /var/tinycp/menu/route/opcache
+}
+
+cache_install_memcached(){
+    . /var/tinycp/menu/controller/cache/install_memcached
+}
+
+cache_install_redis(){
+    . /var/tinycp/menu/controller/cache/install_redis
+}
+
+cache_clear_cache(){
+    . /var/tinycp/menu/controller/cache/clear_cache
+}
+
+cache_fastcgi(){
+    . /var/tinycp/menu/controller/cache/nginx_cache
+}
+
+opcache_enable_disable(){
+    . /var/tinycp/menu/controller/cache/opcache/enable_disable
+}
+
+opcache_add_blacklist(){
+    . /var/tinycp/menu/controller/cache/opcache/add_blacklist
+}
+
+opcache_remove_blacklist(){
+    . /var/tinycp/menu/controller/cache/opcache/remove_blacklist
+}
+
+menu_lemp(){
+    . /var/tinycp/menu/route/lemp
+}
+
+lemp_nginx(){
+    . /var/tinycp/menu/route/lemp_nginx
+}
+
+lemp_php(){
+    . /var/tinycp/menu/route/lemp_php
+}
+
+lemp_php_setting(){
+    . /var/tinycp/menu/controller/php/php_setting
+}
+
+lemp_php1_change(){
+    . /var/tinycp/menu/controller/php/change_php1
+}
+
+lemp_php2_change(){
+    . /var/tinycp/menu/controller/php/change_php2
+}
+
+lemp_install_php2(){
+    . /var/tinycp/menu/controller/php/install_php2
+}
+
+lemp_install_ioncube(){
+    . /var/tinycp/menu/controller/php/install_ioncube
+}
+
+lemp_php_open_basedir(){
+    . /var/tinycp/menu/controller/php/open_basedir
+}
+
+lemp_php_process_manager(){
+    . /var/tinycp/menu/controller/php/process_manager
+}
+
+lemp_php_allow_url_fopen(){
+    . /var/tinycp/menu/controller/php/allow_url_fopen
+}
+
+lemp_php_allow_proc_close(){
+    . /var/tinycp/menu/controller/php/proc_close
+}
+
+lemp_database(){
+    . /var/tinycp/menu/route/lemp_database
+}
+
+lemp_create_db(){
+    . /var/tinycp/menu/controller/database/create_db
+}
+
+lemp_change_pass_db(){
+    . /var/tinycp/menu/controller/database/change_password
+}
+
+lemp_destroy_db(){
+    . /var/tinycp/menu/controller/database/destroy_db
+}
+
+lemp_import_db(){
+    . /var/tinycp/menu/controller/database/import_db
+}
+
+lemp_remote_mysql(){
+    . /var/tinycp/menu/controller/database/remote_mysql
+}
+
+lemp_log(){
+    . /var/tinycp/menu/route/lemp_log
+}
+
+# Removed PageSpeed functions as PageSpeed is no longer being developed
+
+lemp_domain_log(){
+    . /var/tinycp/menu/controller/log/domain_log
+}
+
+menu_firewall(){
+    . /var/tinycp/menu/route/firewall
+}
+
+menu_permission(){
+    . /var/tinycp/menu/route/permission
+}
+
+permission_one(){
+    . /var/tinycp/menu/controller/permission/one
+}
+
+permission_all(){
+    . /var/tinycp/menu/controller/permission/all
+}
+
+menu_wordpress(){
+    . /var/tinycp/menu/route/wordpress
+}
+
+wordpress_auto_install(){
+    . /var/tinycp/menu/controller/wordpress/auto_install
+}
+
+wordpress_update(){
+    . /var/tinycp/menu/controller/wordpress/update_wordpress
+}
+
+wordpress_plugins_manage(){
+    . /var/tinycp/menu/route/wordpress_plugins_manage
+}
+
+wordpress_update_plugins(){
+    . /var/tinycp/menu/controller/wordpress/update_plugins
+}
+
+wordpress_deactivate_all_plugins(){
+    . /var/tinycp/menu/controller/wordpress/deactivate_all_plugins
+}
+
+wordpress_optimize_database(){
+    . /var/tinycp/menu/controller/wordpress/optimize_database
+}
+
+wordpress_change_pass_admin(){
+    . /var/tinycp/menu/controller/wordpress/change_pass_wp_admin
+}
+
+wordpress_move_wp_config(){
+    . /var/tinycp/menu/controller/wordpress/move_wp_config
+}
+
+wordpress_htpasswd_wp_admin(){
+    . /var/tinycp/menu/controller/wordpress/htpasswd_wp_admin
+}
+
+wordpress_disable_edit_theme_plugins(){
+    . /var/tinycp/menu/controller/wordpress/disable_edit_theme_plugins
+}
+
+wordpress_lock(){
+    . /var/tinycp/menu/route/wordpress_lock
+}
+
+wordpress_advanced_menu(){
+    . /var/tinycp/menu/route/wordpress_advanced
+}
+
+wordpress_yoast_seo(){
+    . /var/tinycp/menu/controller/wordpress/yoast_seo
+}
+
+wordpress_rank_math_seo(){
+    . /var/tinycp/menu/controller/wordpress/rank_math_seo
+}
+
+wordpress_plugin_cache(){
+    . /var/tinycp/menu/controller/wordpress/cache_plugins
+}
+
+wordpress_webp_express(){
+    . /var/tinycp/menu/controller/wordpress/webp_express
+}
+
+wordpress_cache_key(){
+    . /var/tinycp/menu/controller/wordpress/cache_key
+}
+
+wordpress_debug_mode(){
+    . /var/tinycp/menu/controller/wordpress/debug_mode
+}
+
+wordpress_maintenance(){
+    . /var/tinycp/menu/controller/wordpress/maintenance_mode
+}
+
+wordpress_xmlrpc(){
+    . /var/tinycp/menu/controller/wordpress/disable_xmlrpc
+}
+
+wordpress_user_api(){
+    . /var/tinycp/menu/controller/wordpress/disable_user_api
+}
+
+wordpress_cron(){
+    . /var/tinycp/menu/controller/wordpress/cron_job
+}
+
+wordpress_delete_post_revisions(){
+    . /var/tinycp/menu/controller/wordpress/post_revision
+}
+
+menu_backup(){
+    . /var/tinycp/menu/route/backup
+}
+
+backup_data(){
+    . /var/tinycp/menu/controller/backup/backup
+}
+
+restore_data(){
+    . /var/tinycp/menu/controller/backup/restore
+}
+
+delete_backup(){
+    . /var/tinycp/menu/controller/backup/delete
+}
+
+connect_google_drive(){
+    . /var/tinycp/menu/controller/backup/connect_google_drive
+}
+
+connect_onedrive(){
+    . /var/tinycp/menu/controller/backup/connect_ondrive
+}
+
+connect_telegram(){
+    . /var/tinycp/menu/controller/backup/connect_telegram
+}
+
+delete_connect_google_drive(){
+    . /var/tinycp/menu/controller/backup/delete_connect_google_drive
+}
+
+menu_admin_tool(){
+    . /var/tinycp/menu/route/admin_tool
+}
+
+update_phpmyadmin(){
+    . /var/tinycp/menu/controller/admin/update_phpmyadmin
+}
+
+update_opcache_panel(){
+    . /var/tinycp/menu/controller/admin/opcache_panel
+}
+
+update_memcached_panel(){
+    . /var/tinycp/menu/controller/admin/php_memcached_admin
+}
+
+update_redis_panel(){
+    . /var/tinycp/menu/controller/admin/redis_panel
+}
+
+admin_tool_change_port(){
+    . /var/tinycp/menu/controller/admin/change_port
+}
+
+menu_vps_manage(){
+    . /var/tinycp/menu/route/vps_manage
+}
+
+info_vps(){
+    . /var/tinycp/menu/controller/vps/vps_info
+}
+
+info_webserver(){
+    . /var/tinycp/menu/controller/vps/webserver_info
+}
+
+vps_ssh(){
+    . /var/tinycp/menu/route/vps_ssh
+}
+
+change_port_ssh(){
+    . /var/tinycp/menu/controller/vps/change_port_ssh
+}
+
+change_vps_parameter(){
+    . /var/tinycp/menu/controller/vps/change_vps_parameter
+}
+
+change_ip_vps(){
+    . /var/tinycp/menu/controller/vps/change_ip_vps
+}
+
+move_vps(){
+    . /var/tinycp/menu/controller/vps/move_vps
+}
+
+convert_vpssim(){
+    . /var/tinycp/menu/controller/vps/vpssim
+}
+
+vps_create_swap(){
+    . /var/tinycp/menu/controller/vps/create_swap
+}
+
+menu_account(){
+    . /var/tinycp/menu/route/account_manage
+}
+
+account_admin_tool(){
+    . /var/tinycp/menu/controller/account/admin_tool
+}
+
+account_phpmyadmin(){
+    . /var/tinycp/menu/controller/account/phpmyadmin
+}
+
+account_website_info(){
+    . /var/tinycp/menu/controller/account/website_info
+}
+
+menu_cronjob(){
+    . /var/tinycp/menu/route/cronjob
+}
+
+cron_backup_local(){
+    . /var/tinycp/menu/controller/cronjob/backup_local
+}
+
+cron_backup_google(){
+    . /var/tinycp/menu/controller/cronjob/backup_google
+}
+
+cron_backup_onedrive(){
+    . /var/tinycp/menu/controller/cronjob/backup_onedrive
+}
+
+cron_backup_telegram(){
+    . /var/tinycp/menu/controller/cronjob/backup_telegram
+}
+
+cron_destroy(){
+    . /var/tinycp/menu/controller/cronjob/destroy_cron
+}
+
+menu_tools(){
+    . /var/tinycp/menu/route/menu_tools
+}
+
+tools_compress_image(){
+    . /var/tinycp/menu/controller/tools/compress_image
+}
+
+tools_deploy_website(){
+    . /var/tinycp/menu/controller/tools/deploy_website
+}
+
+tools_decompress_file(){
+    . /var/tinycp/menu/controller/tools/decompress_file
+}
+
+tools_download_gg_drive(){
+    . /var/tinycp/menu/controller/tools/download_file_gg_drive
+}
+
+website_disk_usage(){
+    . /var/tinycp/menu/controller/tools/website_disk_usage
+}
+
+find_large_file_folder(){
+    . /var/tinycp/menu/controller/tools/find_large_file_folder
+}
+
+tools_install_av(){
+    . /var/tinycp/menu/controller/tools/install_av
+}
+
+tools_install_nodejs(){
+    . /var/tinycp/menu/controller/tools/install_nodejs
+}
+
+update_script(){
+    . /var/tinycp/menu/controller/vps/update_scripts
+}
+
+change_language(){
+    . /var/tinycp/menu/controller/vps/change_language
+}
+
+telegram_notify(){
+    . /var/tinycp/menu/route/notify
+}
+
+telegram_ssh_notify(){
+    . /var/tinycp/menu/controller/telegram/ssh_notify
+}
+
+telegram_service_notify(){
+    . /var/tinycp/menu/controller/telegram/service_notify
+}
+
+telegram_disk_notify(){
+    . /var/tinycp/menu/controller/telegram/disk_notify
+}
+
+telegram_delete_notify(){
+    . /var/tinycp/menu/controller/telegram/delete_notify
+}
