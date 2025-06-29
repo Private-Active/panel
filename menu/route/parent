@@ -530,3 +530,36 @@ telegram_disk_notify(){
 telegram_delete_notify(){
     . /var/tinycp/menu/controller/telegram/delete_notify
 }
+
+# WAF (Web Application Firewall) Functions
+menu_waf(){
+    . /var/tinycp/menu/route/waf
+}
+
+waf_install_modsecurity(){
+    . /var/tinycp/menu/controller/waf/install_modsecurity
+}
+
+waf_toggle_modsecurity(){
+    . /var/tinycp/menu/controller/waf/toggle_modsecurity
+}
+
+waf_domain_management(){
+    . /var/tinycp/menu/controller/waf/domain_management
+}
+
+waf_whitelist_management(){
+    . /var/tinycp/menu/controller/waf/whitelist_management
+}
+
+waf_log_analysis(){
+    . /var/tinycp/menu/controller/waf/log_analysis
+}
+
+waf_custom_rules(){
+    . /var/tinycp/menu/controller/waf/custom_rules
+}
+
+waf_status_info(){
+    . /var/tinycp/menu/controller/waf/status_info
+}

@@ -1,0 +1,59 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+CHOICE=1
+
+printf "%s=========================================%s\n" "${GREEN}" "${NC}"
+printf "%s      Web Application Firewall (WAF)    %s\n" "${GREEN}" "${NC}"
+printf "%s=========================================%s\n" "${GREEN}" "${NC}"
+
+# Check ModSecurity status
+modsec_status="Disabled"
+if [[ -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+    if grep -q "SecRuleEngine On" /etc/nginx/modsec/modsecurity.conf; then
+        modsec_status="${GREEN}Enabled${NC}"
+    else
+        modsec_status="${RED}Installed but Disabled${NC}"
+    fi
+fi
+
+printf "%s ModSecurity Status: %s %s\n" "${GREEN}" "${modsec_status}" "${NC}"
+printf "%s=========================================%s\n" "${GREEN}" "${NC}"
+
+while [ "${CHOICE}" != "0" ]
+do
+    printf "%s1. Install/Update ModSecurity%s\n" "${GREEN}" "${NC}"
+    printf "%s2. Enable/Disable ModSecurity%s\n" "${GREEN}" "${NC}"
+    printf "%s3. Domain WAF Management%s\n" "${GREEN}" "${NC}"
+    printf "%s4. Whitelist Rule Manager%s\n" "${GREEN}" "${NC}"
+    printf "%s5. WAF Log Analysis%s\n" "${GREEN}" "${NC}"
+    printf "%s6. Custom Rule Manager%s\n" "${GREEN}" "${NC}"
+    printf "%s7. WAF Status & Configuration%s\n" "${GREEN}" "${NC}"
+    printf "%s=========================================%s\n" "${GREEN}" "${NC}"
+    read -r -p " ${SELECT_OPTION} " CHOICE
+    if [ -z "${CHOICE}" ]
+    then
+        CHOICE=1
+        continue
+    fi
+    case ${CHOICE} in
+        1) clear; waf_install_modsecurity ;;
+        2) clear; waf_toggle_modsecurity ;;
+        3) clear; waf_domain_management ;;
+        4) clear; waf_whitelist_management ;;
+        5) clear; waf_log_analysis ;;
+        6) clear; waf_custom_rules ;;
+        7) clear; waf_status_info ;;
+        0) clear; menu_primary ;;
+        *) clear; printf "%s\n" "${RED}${WRONG_OPTION}${NC}";;
+    esac
+done

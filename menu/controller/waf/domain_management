@@ -1,0 +1,368 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/tinycp/menu/validate/rule
+source /var/tinycp/menu/helpers/function
+
+_check_modsecurity_installed() {
+    if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        printf "%s\n" "${RED}ModSecurity is not installed. Please install it first.${NC}"
+        echo ""
+        printf "%s\n" "Press any key to return to WAF menu..."
+        read -n 1 -s
+        menu_waf
+        exit 1
+    fi
+}
+
+_select_waf_action() {
+    clear
+    printf "%s\n" "${GREEN}Domain WAF Management${NC}"
+    printf "%s\n" "${GREEN}====================${NC}"
+    echo ""
+    printf "%s\n" "Select an action:"
+    PS3="Enter your choice [1-4]: "
+    options=("Enable WAF for domain" "Disable WAF for domain" "List WAF-enabled domains" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Enable WAF for domain")
+            action="enable"
+            break
+            ;;
+        "Disable WAF for domain")
+            action="disable"
+            break
+            ;;
+        "List WAF-enabled domains")
+            action="list"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_select_domain_for_enable() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "${LIST_DOMAIN}"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            if [ "$domain" != '*' ]; then
+                # Check if domain doesn't already have WAF enabled
+                if ! grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                    domains+=("${domain}")
+                fi
+            fi
+        done
+        
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}All domains already have WAF enabled or no domains found.${NC}")
+        else
+            echo "Select domain to enable WAF:"
+            PS3="${INPUT_SELECT} [0 = Cancel]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_select_domain_for_disable() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "${LIST_DOMAIN}"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            if [ "$domain" != '*' ]; then
+                # Check if domain has WAF enabled
+                if grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                    domains+=("${domain}")
+                fi
+            fi
+        done
+        
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}No domains found with WAF enabled.${NC}")
+        else
+            echo "Select domain to disable WAF:"
+            PS3="${INPUT_SELECT} [0 = Cancel]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_list_waf_enabled_domains() {
+    clear
+    printf "%s\n" "${GREEN}WAF-Enabled Domains${NC}"
+    printf "%s\n" "${GREEN}===================${NC}"
+    echo ""
+    
+    waf_domains=()
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            if [ "$domain" != '*' ]; then
+                if grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                    waf_domains+=("${domain}")
+                fi
+            fi
+        done
+        
+        if [ ${#waf_domains[@]} -eq 0 ]; then
+            printf "%s\n" "${YELLOW}No domains currently have WAF enabled.${NC}"
+        else
+            printf "%s\n" "Domains with WAF enabled:"
+            for waf_domain in "${waf_domains[@]}"; do
+                # Get WAF configuration details
+                if grep -q "modsecurity_rules_file.*whitelist" "${VHOST_DIR}/${waf_domain}.conf" 2>/dev/null; then
+                    whitelist_status="${GREEN}[Custom Whitelist]${NC}"
+                else
+                    whitelist_status=""
+                fi
+                printf "  - %s %s\n" "${GREEN}${waf_domain}${NC}" "${whitelist_status}"
+            done
+        fi
+    else
+        printf "%s\n" "${RED}No domains found.${NC}"
+    fi
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+_enable_waf_for_domain() {
+    if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+        printf "%s\n" "${RED}Operation cancelled.${NC}"
+        return
+    fi
+    
+    user=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
+    vhost_file="${VHOST_DIR}/${domain}.conf"
+    
+    if [[ ! -f "$vhost_file" ]]; then
+        printf "%s\n" "${RED}Domain configuration file not found.${NC}"
+        return
+    fi
+    
+    # Create domain-specific WAF directory
+    mkdir -p "/etc/nginx/modsec/domains/${domain}"
+    
+    # Create domain-specific ModSecurity configuration
+    cat > "/etc/nginx/modsec/domains/${domain}/modsec.conf" << EOF
+# ModSecurity configuration for ${domain}
+modsecurity on;
+modsecurity_rules_file /etc/nginx/modsec/main.conf;
+
+# Optional: Include domain-specific rules
+# modsecurity_rules_file /etc/nginx/modsec/domains/${domain}/custom.conf;
+
+# Optional: Include domain-specific whitelist
+# modsecurity_rules_file /etc/nginx/modsec/domains/${domain}/whitelist.conf;
+EOF
+    
+    # Create empty custom rules file for this domain
+    touch "/etc/nginx/modsec/domains/${domain}/custom.conf"
+    touch "/etc/nginx/modsec/domains/${domain}/whitelist.conf"
+    
+    # Add ModSecurity directives to the domain's vhost configuration
+    # Find the server block for port 80 and add modsecurity
+    if ! grep -q "modsecurity on" "$vhost_file"; then
+        # Add after the server_name directive in the first server block
+        sed -i '/server_name.*'"${domain}"'/a \    # ModSecurity WAF\n    include /etc/nginx/modsec/domains/'"${domain}"'/modsec.conf;' "$vhost_file"
+        
+        # Also add to HTTPS block if it exists
+        if grep -q "listen 443" "$vhost_file"; then
+            # Find the HTTPS server block and add modsecurity there too
+            awk '
+                /server {/ { server_count++ }
+                /listen 443/ { in_https = (server_count > 0) }
+                /server_name.*'"${domain}"'/ && in_https && !added_https {
+                    print $0
+                    print "    # ModSecurity WAF"
+                    print "    include /etc/nginx/modsec/domains/'"${domain}"'/modsec.conf;"
+                    added_https = 1
+                    next
+                }
+                { print }
+            ' "$vhost_file" > "${vhost_file}.tmp" && mv "${vhost_file}.tmp" "$vhost_file"
+        fi
+    fi
+    
+    # Update domain configuration to track WAF status
+    if grep -q "waf_enabled" "${USER_DIR}/.${domain}.conf"; then
+        sed -i 's/waf_enabled=.*/waf_enabled=yes/' "${USER_DIR}/.${domain}.conf"
+    else
+        echo "waf_enabled=yes" >> "${USER_DIR}/.${domain}.conf"
+    fi
+    
+    notify="${GREEN}WAF enabled successfully for ${domain}.${NC}"
+}
+
+_disable_waf_for_domain() {
+    if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+        printf "%s\n" "${RED}Operation cancelled.${NC}"
+        return
+    fi
+    
+    vhost_file="${VHOST_DIR}/${domain}.conf"
+    
+    if [[ ! -f "$vhost_file" ]]; then
+        printf "%s\n" "${RED}Domain configuration file not found.${NC}"
+        return
+    fi
+    
+    # Remove ModSecurity directives from vhost configuration
+    sed -i '/# ModSecurity WAF/d' "$vhost_file"
+    sed -i '/include.*modsec\/domains\/'"${domain}"'/d' "$vhost_file"
+    sed -i '/modsecurity on;/d' "$vhost_file"
+    sed -i '/modsecurity_rules_file/d' "$vhost_file"
+    
+    # Update domain configuration
+    if grep -q "waf_enabled" "${USER_DIR}/.${domain}.conf"; then
+        sed -i 's/waf_enabled=.*/waf_enabled=no/' "${USER_DIR}/.${domain}.conf"
+    fi
+    
+    # Ask if user wants to remove domain-specific rules
+    while true; do
+        read -r -p "Do you want to remove domain-specific WAF rules and logs? [y/N]: " remove_rules
+        case "$remove_rules" in
+            [yY]|[yY][eE][sS])
+                rm -rf "/etc/nginx/modsec/domains/${domain}"
+                printf "%s\n" "${GREEN}Domain-specific WAF rules removed.${NC}"
+                break
+                ;;
+            [nN]|[nN][oO]|"")
+                printf "%s\n" "${YELLOW}Domain-specific WAF rules preserved.${NC}"
+                break
+                ;;
+            *)
+                printf "%s\n" "${RED}Please answer yes or no.${NC}"
+                ;;
+        esac
+    done
+    
+    notify="${GREEN}WAF disabled successfully for ${domain}.${NC}"
+}
+
+_test_and_reload() {
+    if nginx -t; then
+        systemctl reload nginx
+        printf "%s\n" "${GREEN}Nginx configuration reloaded successfully.${NC}"
+        return 0
+    else
+        printf "%s\n" "${RED}Nginx configuration test failed!${NC}"
+        nginx -t
+        return 1
+    fi
+}
+
+# Main execution
+clear
+printf "%s\n" "${GREEN}Domain WAF Management${NC}"
+printf "%s\n" "${GREEN}====================${NC}"
+echo ""
+
+# Check if ModSecurity is installed
+_check_modsecurity_installed
+
+# Initialize variables
+ALERT=""
+domain=""
+action=""
+notify=""
+
+# Select action
+_select_waf_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "%s\n" "${RED}Operation cancelled.${NC}"
+else
+    case "${action}" in
+        "enable")
+            _select_domain_for_enable
+            if [[ -z "${domain}" && -z "${ALERT}" ]]; then
+                clear
+                printf "%s\n" "${RED}Operation cancelled.${NC}"
+            else
+                if [ -z "${ALERT}" ]; then
+                    _enable_waf_for_domain
+                    if [[ -n "${notify}" ]]; then
+                        if _test_and_reload; then
+                            clear
+                            printf "%s\n" "${notify}"
+                            printf "%s\n" "${YELLOW}Note: You can now configure domain-specific rules and whitelist.${NC}"
+                        else
+                            printf "%s\n" "${RED}WAF enabled but nginx reload failed. Please check configuration.${NC}"
+                        fi
+                    fi
+                else
+                    clear
+                    printf "%s\n" "${ALERT}"
+                fi
+            fi
+            ;;
+        "disable")
+            _select_domain_for_disable
+            if [[ -z "${domain}" && -z "${ALERT}" ]]; then
+                clear
+                printf "%s\n" "${RED}Operation cancelled.${NC}"
+            else
+                if [ -z "${ALERT}" ]; then
+                    _disable_waf_for_domain
+                    if [[ -n "${notify}" ]]; then
+                        if _test_and_reload; then
+                            clear
+                            printf "%s\n" "${notify}"
+                        else
+                            printf "%s\n" "${RED}WAF disabled but nginx reload failed. Please check configuration.${NC}"
+                        fi
+                    fi
+                else
+                    clear
+                    printf "%s\n" "${ALERT}"
+                fi
+            fi
+            ;;
+        "list")
+            _list_waf_enabled_domains
+            ;;
+    esac
+fi
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf

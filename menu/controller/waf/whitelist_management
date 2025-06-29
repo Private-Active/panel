@@ -1,0 +1,629 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/tinycp/menu/validate/rule
+source /var/tinycp/menu/helpers/function
+
+_check_modsecurity_installed() {
+    if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        printf "%s\n" "${RED}ModSecurity is not installed. Please install it first.${NC}"
+        echo ""
+        printf "%s\n" "Press any key to return to WAF menu..."
+        read -n 1 -s
+        menu_waf
+        exit 1
+    fi
+}
+
+_select_whitelist_action() {
+    clear
+    printf "%s\n" "${GREEN}WAF Whitelist Rule Manager${NC}"
+    printf "%s\n" "${GREEN}==========================${NC}"
+    echo ""
+    printf "%s\n" "Select an action:"
+    PS3="Enter your choice [1-6]: "
+    options=("Analyze log and create whitelist" "View existing whitelist rules" "Add manual whitelist rule" "Remove whitelist rule" "Test whitelist rules" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Analyze log and create whitelist")
+            action="analyze"
+            break
+            ;;
+        "View existing whitelist rules")
+            action="view"
+            break
+            ;;
+        "Add manual whitelist rule")
+            action="add"
+            break
+            ;;
+        "Remove whitelist rule")
+            action="remove"
+            break
+            ;;
+        "Test whitelist rules")
+            action="test"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_select_domain_with_waf() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "Select domain with WAF enabled:"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain_check=${entry/./}
+            domain_check=${domain_check//.conf/}
+            if [ "$domain_check" != '*' ]; then
+                # Check if domain has WAF enabled
+                if grep -q "modsecurity on" "${VHOST_DIR}/${domain_check}.conf" 2>/dev/null; then
+                    domains+=("${domain_check}")
+                fi
+            fi
+        done
+        
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}No domains found with WAF enabled.${NC}")
+        else
+            PS3="${INPUT_SELECT} [0 = Cancel]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_analyze_modsec_log() {
+    local log_content="$1"
+    local domain="$2"
+    local output_file="/tmp/whitelist_analysis_${domain}_$(date +%s).txt"
+    
+    printf "%s\n" "${GREEN}Analyzing ModSecurity log for ${domain}...${NC}"
+    
+    # Create analysis report
+    cat > "$output_file" << EOF
+# ModSecurity Log Analysis Report for ${domain}
+# Generated on $(date)
+# 
+
+EOF
+
+    # Parse blocked requests and generate whitelist rules
+    local rule_id=9200
+    
+    # Extract unique rule IDs that were triggered
+    echo "$log_content" | grep -oP 'id "\K[0-9]+' | sort -u | while read -r triggered_rule; do
+        # Get the URI and parameters that triggered this rule
+        local uri=$(echo "$log_content" | grep "id \"$triggered_rule\"" | grep -oP 'uri "\K[^"]+' | head -1)
+        local method=$(echo "$log_content" | grep "id \"$triggered_rule\"" | grep -oP 'method "\K[^"]+' | head -1)
+        
+        if [[ -n "$uri" ]]; then
+            cat >> "$output_file" << EOF
+
+# Whitelist for rule $triggered_rule triggered on $uri
+SecRule REQUEST_URI "@beginsWith $uri" \\
+    "id:$rule_id,phase:1,pass,nolog,\\
+    ctl:ruleRemoveById=$triggered_rule"
+
+EOF
+            ((rule_id++))
+        fi
+    done
+    
+    # Extract and analyze specific patterns
+    echo "$log_content" | grep -oP 'msg "\K[^"]+' | sort | uniq -c | sort -nr | head -10 | while read -r count message; do
+        cat >> "$output_file" << EOF
+# Common blocked pattern: $message (occurred $count times)
+# Consider creating specific whitelist rules for legitimate cases
+
+EOF
+    done
+    
+    # Extract common URIs that were blocked
+    echo "$log_content" | grep -oP 'uri "\K[^"]+' | sort | uniq -c | sort -nr | head -5 | while read -r count uri; do
+        if [[ $count -gt 3 ]]; then  # Only suggest whitelist if blocked multiple times
+            cat >> "$output_file" << EOF
+
+# URI blocked multiple times ($count): $uri
+# SecRule REQUEST_URI "@streq $uri" \\
+#     "id:$rule_id,phase:1,pass,nolog,\\
+#     ctl:ruleRemoveById=RULE_ID_TO_DISABLE"
+
+EOF
+            ((rule_id++))
+        fi
+    done
+    
+    echo "$output_file"
+}
+    
+    if [[ ! -f "$log_file" ]]; then
+        printf "%s\n" "${RED}Log file not found: ${log_file}${NC}"
+        return 1
+    fi
+    
+    printf "%s\n" "${GREEN}Analyzing ModSecurity log for ${domain}...${NC}"
+    echo ""
+    
+    # Create analysis file
+    cat > "$temp_analysis" << 'EOF'
+#!/bin/awk -f
+BEGIN {
+    in_entry = 0
+    rule_id = ""
+    msg = ""
+    uri = ""
+    host = ""
+    ip = ""
+    severity = ""
+    data = ""
+}
+
+/^--[a-f0-9-]+-A--/ {
+    in_entry = 1
+    rule_id = ""
+    msg = ""
+    uri = ""
+    host = ""
+    ip = ""
+    severity = ""
+    data = ""
+}
+
+in_entry && /^\[[0-9]/ {
+    # Extract timestamp and other info
+    if (match($0, /\[id "([0-9]+)"\]/, arr)) {
+        rule_id = arr[1]
+    }
+    if (match($0, /\[msg "([^"]+)"\]/, arr)) {
+        msg = arr[1]
+    }
+    if (match($0, /\[severity "([^"]+)"\]/, arr)) {
+        severity = arr[1]
+    }
+    if (match($0, /\[hostname "([^"]+)"\]/, arr)) {
+        host = arr[1]
+    }
+    if (match($0, /\[uri "([^"]+)"\]/, arr)) {
+        uri = arr[1]
+    }
+    if (match($0, /\[client ([0-9.]+)\]/, arr)) {
+        ip = arr[1]
+    }
+}
+
+in_entry && /^--[a-f0-9-]+-B--/ {
+    # Request data section
+    getline
+    data = $0
+}
+
+/^--[a-f0-9-]+-Z--/ {
+    if (in_entry && rule_id != "" && host != "") {
+        print "RULE_ID:" rule_id "|MSG:" msg "|URI:" uri "|HOST:" host "|IP:" ip "|SEVERITY:" severity "|DATA:" data
+    }
+    in_entry = 0
+}
+EOF
+    
+    # Parse the log file
+    local blocked_requests
+    blocked_requests=$(awk -f "$temp_analysis" "$log_file" | grep -E "(${domain}|www\.${domain})" | head -20)
+    
+    rm -f "$temp_analysis"
+    
+    if [[ -z "$blocked_requests" ]]; then
+        printf "%s\n" "${YELLOW}No blocked requests found for ${domain} in the log file.${NC}"
+        return 1
+    fi
+    
+    printf "%s\n" "${GREEN}Found blocked requests for ${domain}:${NC}"
+    printf "%s\n" "${GREEN}========================================${NC}"
+    echo ""
+    
+    local count=1
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            rule_id=$(echo "$line" | cut -d'|' -f1 | cut -d':' -f2)
+            msg=$(echo "$line" | cut -d'|' -f2 | cut -d':' -f2)
+            uri=$(echo "$line" | cut -d'|' -f3 | cut -d':' -f2)
+            severity=$(echo "$line" | cut -d'|' -f6 | cut -d':' -f2)
+            
+            printf "%s\n" "${count}. Rule ID: ${RED}${rule_id}${NC}"
+            printf "%s\n" "   Message: ${msg}"
+            printf "%s\n" "   URI: ${YELLOW}${uri}${NC}"
+            printf "%s\n" "   Severity: ${severity}"
+            echo ""
+            
+            # Store for potential whitelist creation
+            echo "${rule_id}|${uri}|${msg}" >> "/tmp/blocked_rules_${domain}.txt"
+            
+            ((count++))
+        fi
+    done <<< "$blocked_requests"
+    
+    return 0
+}
+
+_create_whitelist_from_analysis() {
+    local domain="$1"
+    local analysis_file="/tmp/blocked_rules_${domain}.txt"
+    local whitelist_file="/etc/nginx/modsec/domains/${domain}/whitelist.conf"
+    
+    if [[ ! -f "$analysis_file" ]]; then
+        printf "%s\n" "${RED}No analysis data found.${NC}"
+        return 1
+    fi
+    
+    printf "%s\n" "${GREEN}Creating whitelist rules for ${domain}...${NC}"
+    echo ""
+    
+    # Backup existing whitelist
+    if [[ -f "$whitelist_file" ]]; then
+        cp "$whitelist_file" "${whitelist_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    fi
+    
+    # Create/update whitelist file header
+    cat > "$whitelist_file" << EOF
+# ModSecurity Whitelist Rules for ${domain}
+# Generated on $(date)
+# This file contains rules to exclude legitimate requests from being blocked
+
+EOF
+    
+    echo "Select rules to whitelist (enter numbers separated by spaces, or 'all' for all rules):"
+    echo "Example: 1 3 5 or all"
+    echo ""
+    
+    local rule_count=1
+    local rule_array=()
+    
+    while IFS='|' read -r rule_id uri msg; do
+        printf "%s\n" "${rule_count}. Rule ${rule_id}: ${msg}"
+        printf "%s\n" "   URI: ${uri}"
+        rule_array[rule_count]="${rule_id}|${uri}|${msg}"
+        echo ""
+        ((rule_count++))
+    done < "$analysis_file"
+    
+    read -r -p "Enter your selection: " selection
+    
+    if [[ "$selection" == "all" ]]; then
+        selection=$(seq 1 $((rule_count-1)) | tr '\n' ' ')
+    fi
+    
+    local rules_added=0
+    for num in $selection; do
+        if [[ $num -gt 0 && $num -lt $rule_count && -n "${rule_array[$num]}" ]]; then
+            IFS='|' read -r rule_id uri msg <<< "${rule_array[$num]}"
+            
+            # Generate whitelist rule
+            cat >> "$whitelist_file" << EOF
+# Whitelist for: ${msg}
+# URI: ${uri}
+SecRule REQUEST_URI "@beginsWith ${uri}" \\
+    "id:90${num}${rule_id:(-3)},\\
+    phase:1,\\
+    nolog,\\
+    allow,\\
+    msg:'Whitelist rule for ${domain}: ${uri}',\\
+    ctl:ruleRemoveById=${rule_id}"
+
+EOF
+            ((rules_added++))
+            printf "%s\n" "${GREEN}Added whitelist rule for Rule ID ${rule_id}${NC}"
+        fi
+    done
+    
+    if [[ $rules_added -gt 0 ]]; then
+        # Update domain's ModSecurity config to include whitelist
+        local modsec_conf="/etc/nginx/modsec/domains/${domain}/modsec.conf"
+        if ! grep -q "whitelist.conf" "$modsec_conf"; then
+            sed -i '/# Optional: Include domain-specific whitelist/a modsecurity_rules_file /etc/nginx/modsec/domains/'"${domain}"'/whitelist.conf;' "$modsec_conf"
+        fi
+        
+        printf "%s\n" "${GREEN}Whitelist rules created successfully!${NC}"
+        printf "%s\n" "${YELLOW}Added ${rules_added} whitelist rules for ${domain}.${NC}"
+    else
+        printf "%s\n" "${YELLOW}No rules were added to whitelist.${NC}"
+    fi
+    
+    # Cleanup
+    rm -f "$analysis_file"
+}
+
+_analyze_log_and_create_whitelist() {
+    if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+        printf "%s\n" "${RED}Operation cancelled.${NC}"
+        return
+    fi
+    
+    printf "%s\n" "${GREEN}Log Analysis for ${domain}${NC}"
+    printf "%s\n" "${GREEN}=========================${NC}"
+    echo ""
+    
+    printf "%s\n" "Available log files:"
+    printf "%s\n" "1. ModSecurity audit log (/var/log/modsec/audit.log)"
+    printf "%s\n" "2. Nginx error log for domain (/home/*/domains/${domain}/logs/error.log)"
+    printf "%s\n" "3. Custom log file (enter path)"
+    echo ""
+    
+    read -r -p "Select log source [1-3]: " log_choice
+    
+    case "$log_choice" in
+        1)
+            log_file="/var/log/modsec/audit.log"
+            ;;
+        2)
+            # Find domain error log
+            user=$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')
+            log_file="/home/${user}/${domain}/logs/error.log"
+            ;;
+        3)
+            read -r -p "Enter full path to log file: " log_file
+            ;;
+        *)
+            printf "%s\n" "${RED}Invalid choice.${NC}"
+            return
+            ;;
+    esac
+    
+    if [[ ! -f "$log_file" ]]; then
+        printf "%s\n" "${RED}Log file not found: ${log_file}${NC}"
+        return
+    fi
+    
+    echo ""
+    printf "%s\n" "Would you like to:"
+    printf "%s\n" "1. Analyze recent entries (last 100 lines)"
+    printf "%s\n" "2. Analyze specific time period"
+    printf "%s\n" "3. Analyze entire log file"
+    echo ""
+    
+    read -r -p "Select option [1-3]: " analyze_choice
+    
+    local temp_log="/tmp/modsec_temp_${domain}.log"
+    
+    case "$analyze_choice" in
+        1)
+            tail -100 "$log_file" > "$temp_log"
+            ;;
+        2)
+            read -r -p "Enter start date (YYYY-MM-DD): " start_date
+            read -r -p "Enter end date (YYYY-MM-DD): " end_date
+            
+            # Extract logs between dates
+            awk -v start="$start_date" -v end="$end_date" '
+                $0 ~ start "," end { print }
+                $0 ~ start { flag=1 }
+                flag && $0 ~ end { flag=0 }
+                flag { print }
+            ' "$log_file" > "$temp_log"
+            ;;
+        3)
+            cp "$log_file" "$temp_log"
+            ;;
+        *)
+            printf "%s\n" "${RED}Invalid choice.${NC}"
+            return
+            ;;
+    esac
+    
+    if _parse_modsec_log "$temp_log" "$domain"; then
+        echo ""
+        while true; do
+            read -r -p "Do you want to create whitelist rules for these blocked requests? [y/N]: " create_whitelist
+            case "$create_whitelist" in
+                [yY]|[yY][eE][sS])
+                    _create_whitelist_from_analysis "$domain"
+                    break
+                    ;;
+                [nN]|[nN][oO]|"")
+                    printf "%s\n" "${GREEN}Analysis completed without creating whitelist rules.${NC}"
+                    break
+                    ;;
+                *)
+                    printf "%s\n" "${RED}Please answer yes or no.${NC}"
+                    ;;
+            esac
+        done
+    fi
+    
+    # Cleanup
+    rm -f "$temp_log"
+}
+
+_view_existing_whitelist() {
+    if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+        printf "%s\n" "${RED}Operation cancelled.${NC}"
+        return
+    fi
+    
+    local whitelist_file="/etc/nginx/modsec/domains/${domain}/whitelist.conf"
+    
+    clear
+    printf "%s\n" "${GREEN}Existing Whitelist Rules for ${domain}${NC}"
+    printf "%s\n" "${GREEN}======================================${NC}"
+    echo ""
+    
+    if [[ ! -f "$whitelist_file" || ! -s "$whitelist_file" ]]; then
+        printf "%s\n" "${YELLOW}No whitelist rules found for ${domain}.${NC}"
+        return
+    fi
+    
+    cat "$whitelist_file"
+    echo ""
+    printf "%s\n" "${GREEN}File location: ${whitelist_file}${NC}"
+}
+
+_add_manual_whitelist() {
+    if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+        printf "%s\n" "${RED}Operation cancelled.${NC}"
+        return
+    fi
+    
+    printf "%s\n" "${GREEN}Add Manual Whitelist Rule for ${domain}${NC}"
+    printf "%s\n" "${GREEN}====================================${NC}"
+    echo ""
+    
+    read -r -p "Enter Rule ID to disable: " rule_id
+    read -r -p "Enter URI pattern (optional): " uri_pattern
+    read -r -p "Enter description: " description
+    
+    if [[ -z "$rule_id" ]]; then
+        printf "%s\n" "${RED}Rule ID is required.${NC}"
+        return
+    fi
+    
+    local whitelist_file="/etc/nginx/modsec/domains/${domain}/whitelist.conf"
+    mkdir -p "/etc/nginx/modsec/domains/${domain}"
+    
+    # Create whitelist rule
+    cat >> "$whitelist_file" << EOF
+
+# Manual whitelist rule: ${description}
+# Created on $(date)
+EOF
+    
+    if [[ -n "$uri_pattern" ]]; then
+        cat >> "$whitelist_file" << EOF
+SecRule REQUEST_URI "@contains ${uri_pattern}" \\
+    "id:91${rule_id:(-3)},\\
+    phase:1,\\
+    nolog,\\
+    allow,\\
+    msg:'Manual whitelist for ${domain}: ${description}',\\
+    ctl:ruleRemoveById=${rule_id}"
+EOF
+    else
+        cat >> "$whitelist_file" << EOF
+SecRuleRemoveById ${rule_id}
+EOF
+    fi
+    
+    printf "%s\n" "${GREEN}Manual whitelist rule added successfully.${NC}"
+}
+
+_test_whitelist_rules() {
+    if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+        printf "%s\n" "${RED}Operation cancelled.${NC}"
+        return
+    fi
+    
+    local whitelist_file="/etc/nginx/modsec/domains/${domain}/whitelist.conf"
+    
+    printf "%s\n" "${GREEN}Testing Whitelist Rules for ${domain}${NC}"
+    printf "%s\n" "${GREEN}=================================${NC}"
+    echo ""
+    
+    if [[ ! -f "$whitelist_file" ]]; then
+        printf "%s\n" "${YELLOW}No whitelist file found for ${domain}.${NC}"
+        return
+    fi
+    
+    # Test nginx configuration
+    printf "%s\n" "Testing nginx configuration..."
+    if nginx -t; then
+        printf "%s\n" "${GREEN}✓ Nginx configuration test passed.${NC}"
+        
+        # Check if whitelist is properly included
+        local modsec_conf="/etc/nginx/modsec/domains/${domain}/modsec.conf"
+        if grep -q "whitelist.conf" "$modsec_conf"; then
+            printf "%s\n" "${GREEN}✓ Whitelist rules properly included.${NC}"
+        else
+            printf "%s\n" "${YELLOW}⚠ Whitelist file exists but not included in ModSecurity config.${NC}"
+            echo "   Run domain management to fix this."
+        fi
+        
+        # Show whitelist rule count
+        local rule_count
+        rule_count=$(grep -c "SecRule\|SecRuleRemoveById" "$whitelist_file")
+        printf "%s\n" "${GREEN}✓ Found ${rule_count} whitelist rules.${NC}"
+        
+    else
+        printf "%s\n" "${RED}✗ Nginx configuration test failed.${NC}"
+        nginx -t
+    fi
+}
+
+# Main execution
+clear
+printf "%s\n" "${GREEN}WAF Whitelist Rule Manager${NC}"
+printf "%s\n" "${GREEN}==========================${NC}"
+echo ""
+
+# Check if ModSecurity is installed
+_check_modsecurity_installed
+
+# Initialize variables
+ALERT=""
+domain=""
+action=""
+
+# Select action
+_select_whitelist_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "%s\n" "${RED}Operation cancelled.${NC}"
+else
+    case "${action}" in
+        "analyze"|"view"|"add"|"test")
+            _select_domain_with_waf
+            if [[ -z "${domain}" && -z "${ALERT}" ]]; then
+                clear
+                printf "%s\n" "${RED}Operation cancelled.${NC}"
+            else
+                if [ -z "${ALERT}" ]; then
+                    case "${action}" in
+                        "analyze")
+                            _analyze_log_and_create_whitelist
+                            ;;
+                        "view")
+                            _view_existing_whitelist
+                            ;;
+                        "add")
+                            _add_manual_whitelist
+                            ;;
+                        "test")
+                            _test_whitelist_rules
+                            ;;
+                    esac
+                else
+                    clear
+                    printf "%s\n" "${ALERT}"
+                fi
+            fi
+            ;;
+        "remove")
+            printf "%s\n" "${YELLOW}Feature coming soon...${NC}"
+            ;;
+    esac
+fi
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf

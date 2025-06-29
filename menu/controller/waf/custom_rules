@@ -1,0 +1,675 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/tinycp/menu/validate/rule
+source /var/tinycp/menu/helpers/function
+
+_check_modsecurity_installed() {
+    if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        printf "%s\n" "${RED}ModSecurity is not installed. Please install it first.${NC}"
+        echo ""
+        printf "%s\n" "Press any key to return to WAF menu..."
+        read -n 1 -s
+        menu_waf
+        exit 1
+    fi
+}
+
+_select_custom_rules_action() {
+    clear
+    printf "%s\n" "${GREEN}Custom WAF Rules Manager${NC}"
+    printf "%s\n" "${GREEN}========================${NC}"
+    echo ""
+    printf "%s\n" "Select an action:"
+    PS3="Enter your choice [1-7]: "
+    options=("Create custom rule" "View existing custom rules" "Edit custom rules" "Test custom rules" "Import rule set" "Backup/Restore rules" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Create custom rule")
+            action="create"
+            break
+            ;;
+        "View existing custom rules")
+            action="view"
+            break
+            ;;
+        "Edit custom rules")
+            action="edit"
+            break
+            ;;
+        "Test custom rules")
+            action="test"
+            break
+            ;;
+        "Import rule set")
+            action="import"
+            break
+            ;;
+        "Backup/Restore rules")
+            action="backup"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_select_scope() {
+    printf "%s\n" "Select rule scope:"
+    PS3="Enter your choice [1-2]: "
+    options=("Global (applies to all domains)" "Domain-specific")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Global (applies to all domains)")
+            scope="global"
+            break
+            ;;
+        "Domain-specific")
+            scope="domain"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_select_domain_for_rules() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "Select domain for custom rules:"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain_check=${entry/./}
+            domain_check=${domain_check//.conf/}
+            if [ "$domain_check" != '*' ]; then
+                domains+=("${domain_check}")
+            fi
+        done
+        
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}No domains found.${NC}")
+        else
+            PS3="${INPUT_SELECT} [0 = Cancel]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+_create_custom_rule() {
+    printf "%s\n" "${GREEN}Create Custom WAF Rule${NC}"
+    printf "%s\n" "${GREEN}======================${NC}"
+    echo ""
+    
+    _select_scope
+    
+    if [[ "$scope" == "domain" ]]; then
+        _select_domain_for_rules
+        if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+            printf "%s\n" "${RED}Operation cancelled.${NC}"
+            return
+        fi
+        rules_file="/etc/nginx/modsec/domains/${domain}/custom.conf"
+        rules_dir="/etc/nginx/modsec/domains/${domain}"
+    else
+        rules_file="/etc/nginx/modsec/rules/custom_global.conf"
+        rules_dir="/etc/nginx/modsec/rules"
+    fi
+    
+    # Create directory if it doesn't exist
+    mkdir -p "$rules_dir"
+    
+    printf "%s\n" "Custom Rule Templates:"
+    printf "%s\n" "1. Block specific IP address"
+    printf "%s\n" "2. Block specific User-Agent"
+    printf "%s\n" "3. Block specific URI pattern"
+    printf "%s\n" "4. Rate limiting rule"
+    printf "%s\n" "5. Custom request header filtering"
+    printf "%s\n" "6. Manual rule (write your own)"
+    echo ""
+    
+    read -r -p "Select template [1-6]: " template_choice
+    
+    case "$template_choice" in
+        1)
+            read -r -p "Enter IP address to block: " ip_addr
+            read -r -p "Enter description: " description
+            
+            cat >> "$rules_file" << EOF
+
+# Custom rule: Block IP ${ip_addr}
+# Description: ${description}
+# Created on $(date)
+SecRule REMOTE_ADDR "@ipMatch ${ip_addr}" \\
+    "id:90001,\\
+    phase:1,\\
+    deny,\\
+    status:403,\\
+    msg:'Blocked IP: ${ip_addr} - ${description}',\\
+    logdata:'Blocked IP: %{REMOTE_ADDR}'"
+
+EOF
+            ;;
+        2)
+            read -r -p "Enter User-Agent pattern to block: " user_agent
+            read -r -p "Enter description: " description
+            
+            cat >> "$rules_file" << EOF
+
+# Custom rule: Block User-Agent
+# Description: ${description}
+# Created on $(date)
+SecRule REQUEST_HEADERS:User-Agent "@contains ${user_agent}" \\
+    "id:90002,\\
+    phase:1,\\
+    deny,\\
+    status:403,\\
+    msg:'Blocked User-Agent: ${user_agent} - ${description}',\\
+    logdata:'User-Agent: %{REQUEST_HEADERS.User-Agent}'"
+
+EOF
+            ;;
+        3)
+            read -r -p "Enter URI pattern to block: " uri_pattern
+            read -r -p "Enter description: " description
+            
+            cat >> "$rules_file" << EOF
+
+# Custom rule: Block URI pattern
+# Description: ${description}
+# Created on $(date)
+SecRule REQUEST_URI "@contains ${uri_pattern}" \\
+    "id:90003,\\
+    phase:1,\\
+    deny,\\
+    status:403,\\
+    msg:'Blocked URI pattern: ${uri_pattern} - ${description}',\\
+    logdata:'URI: %{REQUEST_URI}'"
+
+EOF
+            ;;
+        4)
+            read -r -p "Enter maximum requests per minute: " rate_limit
+            read -r -p "Enter description: " description
+            
+            cat >> "$rules_file" << EOF
+
+# Custom rule: Rate limiting
+# Description: ${description}
+# Created on $(date)
+SecAction "id:90004,\\
+    phase:1,\\
+    nolog,\\
+    pass,\\
+    initcol:ip=%{REMOTE_ADDR},\\
+    setvar:ip.requests_per_minute=+1,\\
+    expirevar:ip.requests_per_minute=60"
+
+SecRule IP:REQUESTS_PER_MINUTE "@gt ${rate_limit}" \\
+    "id:90005,\\
+    phase:1,\\
+    deny,\\
+    status:429,\\
+    msg:'Rate limit exceeded: ${rate_limit} requests per minute - ${description}',\\
+    logdata:'IP: %{REMOTE_ADDR}, Requests: %{IP.REQUESTS_PER_MINUTE}'"
+
+EOF
+            ;;
+        5)
+            read -r -p "Enter header name: " header_name
+            read -r -p "Enter header value pattern to block: " header_value
+            read -r -p "Enter description: " description
+            
+            cat >> "$rules_file" << EOF
+
+# Custom rule: Block specific header
+# Description: ${description}
+# Created on $(date)
+SecRule REQUEST_HEADERS:${header_name} "@contains ${header_value}" \\
+    "id:90006,\\
+    phase:1,\\
+    deny,\\
+    status:403,\\
+    msg:'Blocked header ${header_name}: ${header_value} - ${description}',\\
+    logdata:'Header: %{REQUEST_HEADERS.${header_name}}'"
+
+EOF
+            ;;
+        6)
+            printf "%s\n" "Enter your custom ModSecurity rule:"
+            printf "%s\n" "(Press Ctrl+D when finished, or type 'END' on a new line)"
+            echo ""
+            
+            read -r -p "Enter rule description: " description
+            
+            cat >> "$rules_file" << EOF
+
+# Custom rule: Manual rule
+# Description: ${description}
+# Created on $(date)
+EOF
+            
+            while IFS= read -r line; do
+                if [[ "$line" == "END" ]]; then
+                    break
+                fi
+                echo "$line" >> "$rules_file"
+            done
+            
+            echo "" >> "$rules_file"
+            ;;
+        *)
+            printf "%s\n" "${RED}Invalid template choice.${NC}"
+            return
+            ;;
+    esac
+    
+    # Update ModSecurity configuration to include custom rules if not already included
+    if [[ "$scope" == "domain" ]]; then
+        local modsec_conf="/etc/nginx/modsec/domains/${domain}/modsec.conf"
+        if ! grep -q "custom.conf" "$modsec_conf"; then
+            sed -i '/# Optional: Include domain-specific rules/a modsecurity_rules_file /etc/nginx/modsec/domains/'"${domain}"'/custom.conf;' "$modsec_conf"
+        fi
+    else
+        if ! grep -q "custom_global.conf" "/etc/nginx/modsec/main.conf"; then
+            echo "include /etc/nginx/modsec/rules/custom_global.conf" >> "/etc/nginx/modsec/main.conf"
+        fi
+    fi
+    
+    printf "%s\n" "${GREEN}Custom rule created successfully!${NC}"
+    
+    if [[ "$scope" == "domain" ]]; then
+        printf "%s\n" "${GREEN}Rule added to: ${rules_file}${NC}"
+    else
+        printf "%s\n" "${GREEN}Global rule added to: ${rules_file}${NC}"
+    fi
+}
+
+_view_existing_rules() {
+    printf "%s\n" "${GREEN}View Existing Custom Rules${NC}"
+    printf "%s\n" "${GREEN}=========================${NC}"
+    echo ""
+    
+    _select_scope
+    
+    if [[ "$scope" == "domain" ]]; then
+        _select_domain_for_rules
+        if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+            printf "%s\n" "${RED}Operation cancelled.${NC}"
+            return
+        fi
+        rules_file="/etc/nginx/modsec/domains/${domain}/custom.conf"
+        printf "%s\n" "${GREEN}Custom rules for domain: ${domain}${NC}"
+    else
+        rules_file="/etc/nginx/modsec/rules/custom_global.conf"
+        printf "%s\n" "${GREEN}Global custom rules${NC}"
+    fi
+    
+    printf "%s\n" "${GREEN}========================================${NC}"
+    echo ""
+    
+    if [[ ! -f "$rules_file" || ! -s "$rules_file" ]]; then
+        printf "%s\n" "${YELLOW}No custom rules found.${NC}"
+        return
+    fi
+    
+    cat "$rules_file"
+    echo ""
+    printf "%s\n" "${GREEN}File location: ${rules_file}${NC}"
+}
+
+_edit_custom_rules() {
+    printf "%s\n" "${GREEN}Edit Custom Rules${NC}"
+    printf "%s\n" "${GREEN}=================${NC}"
+    echo ""
+    
+    _select_scope
+    
+    if [[ "$scope" == "domain" ]]; then
+        _select_domain_for_rules
+        if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+            printf "%s\n" "${RED}Operation cancelled.${NC}"
+            return
+        fi
+        rules_file="/etc/nginx/modsec/domains/${domain}/custom.conf"
+    else
+        rules_file="/etc/nginx/modsec/rules/custom_global.conf"
+    fi
+    
+    if [[ ! -f "$rules_file" ]]; then
+        printf "%s\n" "${YELLOW}No custom rules file found. Creating new file...${NC}"
+        touch "$rules_file"
+    fi
+    
+    # Create backup
+    cp "$rules_file" "${rules_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    
+    printf "%s\n" "${GREEN}Opening editor for: ${rules_file}${NC}"
+    printf "%s\n" "${YELLOW}Backup created automatically.${NC}"
+    echo ""
+    printf "%s\n" "Press any key to open nano editor..."
+    read -n 1 -s
+    
+    nano "$rules_file"
+    
+    printf "%s\n" "${GREEN}File edited. Testing configuration...${NC}"
+    
+    if nginx -t; then
+        printf "%s\n" "${GREEN}Configuration test passed.${NC}"
+    else
+        printf "%s\n" "${RED}Configuration test failed!${NC}"
+        while true; do
+            read -r -p "Do you want to restore from backup? [y/N]: " restore
+            case "$restore" in
+                [yY]|[yY][eE][sS])
+                    cp "${rules_file}.backup."* "$rules_file"
+                    printf "%s\n" "${GREEN}Backup restored.${NC}"
+                    break
+                    ;;
+                [nN]|[nN][oO]|"")
+                    printf "%s\n" "${YELLOW}Backup not restored. Please fix the configuration manually.${NC}"
+                    break
+                    ;;
+                *)
+                    printf "%s\n" "${RED}Please answer yes or no.${NC}"
+                    ;;
+            esac
+        done
+    fi
+}
+
+_test_custom_rules() {
+    printf "%s\n" "${GREEN}Test Custom Rules${NC}"
+    printf "%s\n" "${GREEN}=================${NC}"
+    echo ""
+    
+    printf "%s\n" "Testing nginx configuration with current rules..."
+    
+    if nginx -t; then
+        printf "%s\n" "${GREEN}✓ Nginx configuration test passed.${NC}"
+        echo ""
+        
+        # Check rule files existence and syntax
+        printf "%s\n" "Checking custom rule files:"
+        
+        # Global rules
+        if [[ -f "/etc/nginx/modsec/rules/custom_global.conf" ]]; then
+            rule_count=$(grep -c "SecRule\|SecAction" "/etc/nginx/modsec/rules/custom_global.conf" 2>/dev/null || echo "0")
+            printf "%s\n" "${GREEN}✓ Global custom rules: ${rule_count} rules found${NC}"
+        else
+            printf "%s\n" "${YELLOW}⚠ No global custom rules file${NC}"
+        fi
+        
+        # Domain-specific rules
+        if [[ -d "/etc/nginx/modsec/domains" ]]; then
+            for domain_dir in /etc/nginx/modsec/domains/*/; do
+                if [[ -d "$domain_dir" ]]; then
+                    domain_name=$(basename "$domain_dir")
+                    custom_file="${domain_dir}custom.conf"
+                    if [[ -f "$custom_file" ]]; then
+                        rule_count=$(grep -c "SecRule\|SecAction" "$custom_file" 2>/dev/null || echo "0")
+                        printf "%s\n" "${GREEN}✓ ${domain_name}: ${rule_count} custom rules${NC}"
+                    fi
+                fi
+            done
+        fi
+        
+        echo ""
+        printf "%s\n" "${GREEN}All custom rules are syntactically valid.${NC}"
+        
+    else
+        printf "%s\n" "${RED}✗ Nginx configuration test failed.${NC}"
+        echo ""
+        nginx -t
+    fi
+}
+
+_import_rule_set() {
+    printf "%s\n" "${GREEN}Import Rule Set${NC}"
+    printf "%s\n" "${GREEN}===============${NC}"
+    echo ""
+    
+    printf "%s\n" "Available import options:"
+    printf "%s\n" "1. Import from file"
+    printf "%s\n" "2. Import common rule templates"
+    printf "%s\n" "3. Import from URL"
+    echo ""
+    
+    read -r -p "Select import method [1-3]: " import_choice
+    
+    _select_scope
+    
+    if [[ "$scope" == "domain" ]]; then
+        _select_domain_for_rules
+        if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+            printf "%s\n" "${RED}Operation cancelled.${NC}"
+            return
+        fi
+        rules_file="/etc/nginx/modsec/domains/${domain}/custom.conf"
+    else
+        rules_file="/etc/nginx/modsec/rules/custom_global.conf"
+    fi
+    
+    case "$import_choice" in
+        1)
+            read -r -p "Enter full path to rule file: " import_file
+            if [[ -f "$import_file" ]]; then
+                echo "" >> "$rules_file"
+                echo "# Imported rules from ${import_file} on $(date)" >> "$rules_file"
+                cat "$import_file" >> "$rules_file"
+                printf "%s\n" "${GREEN}Rules imported successfully from ${import_file}.${NC}"
+            else
+                printf "%s\n" "${RED}File not found: ${import_file}${NC}"
+            fi
+            ;;
+        2)
+            printf "%s\n" "Installing common rule templates..."
+            
+            cat >> "$rules_file" << 'EOF'
+
+# Common Security Rules Template
+# Generated on $(date)
+
+# Block common SQL injection patterns
+SecRule ARGS "@detectSQLi" \
+    "id:90100,\
+    phase:2,\
+    deny,\
+    status:403,\
+    msg:'SQL Injection Attack Detected',\
+    logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}'"
+
+# Block common XSS patterns
+SecRule ARGS "@detectXSS" \
+    "id:90101,\
+    phase:2,\
+    deny,\
+    status:403,\
+    msg:'XSS Attack Detected',\
+    logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}'"
+
+# Block directory traversal attempts
+SecRule REQUEST_URI "@detectPathTraversal" \
+    "id:90102,\
+    phase:1,\
+    deny,\
+    status:403,\
+    msg:'Path Traversal Attack Detected',\
+    logdata:'URI: %{REQUEST_URI}'"
+
+# Block suspicious user agents
+SecRule REQUEST_HEADERS:User-Agent "@pmFromFile /etc/nginx/modsec/rules/bad_user_agents.txt" \
+    "id:90103,\
+    phase:1,\
+    deny,\
+    status:403,\
+    msg:'Malicious User Agent Detected',\
+    logdata:'User-Agent: %{REQUEST_HEADERS.User-Agent}'"
+
+EOF
+            
+            # Create bad user agents file
+            mkdir -p "/etc/nginx/modsec/rules"
+            cat > "/etc/nginx/modsec/rules/bad_user_agents.txt" << 'EOF'
+sqlmap
+nikto
+nmap
+masscan
+zgrab
+shodan
+censys
+EOF
+            
+            printf "%s\n" "${GREEN}Common rule templates imported successfully.${NC}"
+            ;;
+        3)
+            read -r -p "Enter URL to download rules from: " rule_url
+            if wget -q --spider "$rule_url"; then
+                echo "" >> "$rules_file"
+                echo "# Imported rules from ${rule_url} on $(date)" >> "$rules_file"
+                wget -qO- "$rule_url" >> "$rules_file"
+                printf "%s\n" "${GREEN}Rules imported successfully from ${rule_url}.${NC}"
+            else
+                printf "%s\n" "${RED}Failed to download from URL: ${rule_url}${NC}"
+            fi
+            ;;
+        *)
+            printf "%s\n" "${RED}Invalid import method.${NC}"
+            ;;
+    esac
+}
+
+_backup_restore_rules() {
+    printf "%s\n" "${GREEN}Backup/Restore Custom Rules${NC}"
+    printf "%s\n" "${GREEN}==========================${NC}"
+    echo ""
+    
+    printf "%s\n" "Select action:"
+    printf "%s\n" "1. Create backup"
+    printf "%s\n" "2. Restore from backup"
+    printf "%s\n" "3. List available backups"
+    echo ""
+    
+    read -r -p "Select action [1-3]: " backup_action
+    
+    local backup_dir="/var/backups/modsec_rules"
+    mkdir -p "$backup_dir"
+    
+    case "$backup_action" in
+        1)
+            local backup_name="modsec_rules_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+            printf "%s\n" "Creating backup: ${backup_name}"
+            
+            tar -czf "${backup_dir}/${backup_name}" \
+                /etc/nginx/modsec/rules/ \
+                /etc/nginx/modsec/domains/ \
+                2>/dev/null
+            
+            printf "%s\n" "${GREEN}Backup created: ${backup_dir}/${backup_name}${NC}"
+            ;;
+        2)
+            printf "%s\n" "Available backups:"
+            ls -la "$backup_dir"/*.tar.gz 2>/dev/null
+            echo ""
+            
+            read -r -p "Enter backup filename: " backup_file
+            
+            if [[ -f "${backup_dir}/${backup_file}" ]]; then
+                while true; do
+                    read -r -p "This will overwrite current rules. Continue? [y/N]: " confirm
+                    case "$confirm" in
+                        [yY]|[yY][eE][sS])
+                            tar -xzf "${backup_dir}/${backup_file}" -C /
+                            printf "%s\n" "${GREEN}Rules restored from ${backup_file}.${NC}"
+                            break
+                            ;;
+                        [nN]|[nN][oO]|"")
+                            printf "%s\n" "${RED}Restore cancelled.${NC}"
+                            break
+                            ;;
+                        *)
+                            printf "%s\n" "${RED}Please answer yes or no.${NC}"
+                            ;;
+                    esac
+                done
+            else
+                printf "%s\n" "${RED}Backup file not found: ${backup_file}${NC}"
+            fi
+            ;;
+        3)
+            printf "%s\n" "Available backups:"
+            ls -la "$backup_dir"/*.tar.gz 2>/dev/null || printf "%s\n" "${YELLOW}No backups found.${NC}"
+            ;;
+        *)
+            printf "%s\n" "${RED}Invalid action.${NC}"
+            ;;
+    esac
+}
+
+# Main execution
+clear
+printf "%s\n" "${GREEN}Custom WAF Rules Manager${NC}"
+printf "%s\n" "${GREEN}========================${NC}"
+echo ""
+
+# Check if ModSecurity is installed
+_check_modsecurity_installed
+
+# Initialize variables
+ALERT=""
+domain=""
+action=""
+scope=""
+
+# Select action
+_select_custom_rules_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "%s\n" "${RED}Operation cancelled.${NC}"
+else
+    case "${action}" in
+        "create")
+            _create_custom_rule
+            ;;
+        "view")
+            _view_existing_rules
+            ;;
+        "edit")
+            _edit_custom_rules
+            ;;
+        "test")
+            _test_custom_rules
+            ;;
+        "import")
+            _import_rule_set
+            ;;
+        "backup")
+            _backup_restore_rules
+            ;;
+    esac
+fi
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf

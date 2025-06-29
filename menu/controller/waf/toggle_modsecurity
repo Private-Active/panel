@@ -1,0 +1,517 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/tinycp/menu/validate/rule
+source /var/tinycp/menu/helpers/function
+
+_check_modsecurity_installed() {
+    if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        printf "%s\n" "${RED}ModSecurity is not installed. Please install it first.${NC}"
+        echo ""
+        printf "%s\n" "Press any key to return to WAF menu..."
+        read -n 1 -s
+        menu_waf
+        exit 1
+    fi
+}
+
+_get_current_status() {
+    if grep -q "SecRuleEngine On" /etc/nginx/modsec/modsecurity.conf 2>/dev/null; then
+        echo "enabled"
+    elif grep -q "SecRuleEngine DetectionOnly" /etc/nginx/modsec/modsecurity.conf 2>/dev/null; then
+        echo "detection"
+    else
+        echo "disabled"
+    fi
+}
+
+_set_modsecurity_status() {
+    local new_status="$1"
+    local config_file="/etc/nginx/modsec/modsecurity.conf"
+    
+    case "$new_status" in
+        "enabled")
+            sed -i 's/SecRuleEngine .*/SecRuleEngine On/' "$config_file"
+            ;;
+        "detection")
+            sed -i 's/SecRuleEngine .*/SecRuleEngine DetectionOnly/' "$config_file"
+            ;;
+        "disabled")
+            sed -i 's/SecRuleEngine .*/SecRuleEngine Off/' "$config_file"
+            ;;
+    esac
+}
+
+_show_status() {
+    local status=$(_get_current_status)
+    local status_color=""
+    local status_text=""
+    
+    case "$status" in
+        "enabled")
+            status_color="${GREEN}"
+            status_text="Enabled (Blocking)"
+            ;;
+        "detection")
+            status_color="${YELLOW}"
+            status_text="Detection Only (Logging)"
+            ;;
+        "disabled")
+            status_color="${RED}"
+            status_text="Disabled"
+            ;;
+    esac
+    
+    clear
+    printf "%s\n" "${GREEN}ModSecurity Status Control${NC}"
+    printf "%s\n" "${GREEN}=========================${NC}"
+    echo ""
+    printf "Current Status: %s%s%s\n" "$status_color" "$status_text" "${NC}"
+    echo ""
+    
+    # Show statistics if enabled
+    if [[ "$status" != "disabled" ]]; then
+        local audit_log="/var/log/modsec_audit/modsec_audit.log"
+        if [[ -f "$audit_log" ]]; then
+            local total_blocks=$(grep -c "ModSecurity.*Intercepted" "$audit_log" 2>/dev/null || echo 0)
+            local blocks_today=$(grep "$(date +%d/%b/%Y)" "$audit_log" | grep -c "ModSecurity.*Intercepted" 2>/dev/null || echo 0)
+            
+            printf "Total blocks: %s\n" "${RED}$total_blocks${NC}"
+            printf "Blocks today: %s\n" "${RED}$blocks_today${NC}"
+            echo ""
+        fi
+        
+        # Show domains with WAF enabled
+        local waf_domains=()
+        if [[ "$(ls -A "${USER_DIR}")" ]]; then
+            _cd_dir "${USER_DIR}"
+            for entry in .*.conf; do
+                domain=${entry/./}
+                domain=${domain//.conf/}
+                if [ "$domain" != '*' ]; then
+                    if grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                        waf_domains+=("${domain}")
+                    fi
+                fi
+            done
+        fi
+        
+        if [ ${#waf_domains[@]} -gt 0 ]; then
+            printf "Domains with WAF enabled: %s\n" "${GREEN}${#waf_domains[@]}${NC}"
+            for domain in "${waf_domains[@]}"; do
+                printf "  - %s\n" "$domain"
+            done
+        else
+            printf "%s\n" "${YELLOW}No domains have WAF enabled yet.${NC}"
+        fi
+        echo ""
+    fi
+}
+
+_select_action() {
+    local current_status=$(_get_current_status)
+    
+    printf "%s\n" "Select action:"
+    
+    if [[ "$current_status" == "enabled" ]]; then
+        PS3="Enter your choice [1-4]: "
+        options=("Switch to Detection Only" "Disable ModSecurity" "View configuration" "Cancel")
+    elif [[ "$current_status" == "detection" ]]; then
+        PS3="Enter your choice [1-4]: "
+        options=("Enable full protection" "Disable ModSecurity" "View configuration" "Cancel")
+    else
+        PS3="Enter your choice [1-4]: "
+        options=("Enable Detection Only" "Enable full protection" "View configuration" "Cancel")
+    fi
+    
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Switch to Detection Only"|"Enable Detection Only")
+            action="detection"
+            break
+            ;;
+        "Enable full protection")
+            action="enabled"
+            break
+            ;;
+        "Disable ModSecurity")
+            action="disabled"
+            break
+            ;;
+        "View configuration")
+            action="view"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_apply_change() {
+    local new_status="$1"
+    local current_status=$(_get_current_status)
+    
+    if [[ "$current_status" == "$new_status" ]]; then
+        printf "%s\n" "${YELLOW}ModSecurity is already in the requested state.${NC}"
+        return
+    fi
+    
+    printf "%s\n" "${GREEN}Changing ModSecurity status to: $new_status${NC}"
+    
+    # Apply the change
+    _set_modsecurity_status "$new_status"
+    
+    # Test nginx configuration
+    if nginx -t &>/dev/null; then
+        systemctl reload nginx
+        
+        local status_text=""
+        case "$new_status" in
+            "enabled")
+                status_text="enabled with full protection"
+                ;;
+            "detection")
+                status_text="enabled in detection-only mode"
+                ;;
+            "disabled")
+                status_text="disabled"
+                ;;
+        esac
+        
+        printf "%s\n" "${GREEN}ModSecurity successfully $status_text.${NC}"
+        
+        # Show additional information based on new status
+        case "$new_status" in
+            "enabled")
+                echo ""
+                printf "%s\n" "${YELLOW}⚠️  ModSecurity is now actively blocking threats.${NC}"
+                printf "%s\n" "${YELLOW}Monitor your applications closely for any false positives.${NC}"
+                printf "%s\n" "${YELLOW}Use the whitelist management if legitimate requests are blocked.${NC}"
+                ;;
+            "detection")
+                echo ""
+                printf "%s\n" "${YELLOW}ℹ️  ModSecurity is now in detection mode.${NC}"
+                printf "%s\n" "${YELLOW}Threats will be logged but not blocked.${NC}"
+                printf "%s\n" "${YELLOW}Review logs to tune rules before enabling full protection.${NC}"
+                ;;
+            "disabled")
+                echo ""
+                printf "%s\n" "${RED}⚠️  ModSecurity is now disabled.${NC}"
+                printf "%s\n" "${RED}Your websites are not protected by WAF.${NC}"
+                ;;
+        esac
+        
+    else
+        printf "%s\n" "${RED}Error: Nginx configuration test failed.${NC}"
+        printf "%s\n" "${RED}Reverting changes...${NC}"
+        
+        # Revert to previous state
+        _set_modsecurity_status "$current_status"
+        
+        printf "%s\n" "${RED}Please check your ModSecurity configuration manually.${NC}"
+        nginx -t
+    fi
+}
+
+_view_configuration() {
+    clear
+    printf "%s\n" "${GREEN}Current ModSecurity Configuration${NC}"
+    printf "%s\n" "${GREEN}=================================${NC}"
+    echo ""
+    
+    local config_file="/etc/nginx/modsec/modsecurity.conf"
+    
+    if [[ -f "$config_file" ]]; then
+        printf "%s\n" "Key configuration settings:"
+        echo ""
+        
+        # Show important configuration lines
+        grep -E "^SecRuleEngine|^SecRequestBodyAccess|^SecResponseBodyAccess|^SecAuditEngine" "$config_file" | while read -r line; do
+            local setting=$(echo "$line" | cut -d' ' -f1)
+            local value=$(echo "$line" | cut -d' ' -f2-)
+            
+            case "$setting" in
+                "SecRuleEngine")
+                    if [[ "$value" == "On" ]]; then
+                        printf "%-25s: %s%s%s\n" "$setting" "${GREEN}" "$value" "${NC}"
+                    elif [[ "$value" == "DetectionOnly" ]]; then
+                        printf "%-25s: %s%s%s\n" "$setting" "${YELLOW}" "$value" "${NC}"
+                    else
+                        printf "%-25s: %s%s%s\n" "$setting" "${RED}" "$value" "${NC}"
+                    fi
+                    ;;
+                *)
+                    printf "%-25s: %s\n" "$setting" "$value"
+                    ;;
+            esac
+        done
+        
+        echo ""
+        
+        # Show log file locations
+        printf "%s\n" "Log files:"
+        local audit_log=$(grep "^SecAuditLog" "$config_file" | cut -d' ' -f2- || echo "Not configured")
+        local debug_log=$(grep "^SecDebugLog" "$config_file" | cut -d' ' -f2- || echo "Not configured")
+        
+        printf "  Audit log: %s\n" "$audit_log"
+        printf "  Debug log: %s\n" "$debug_log"
+        
+        echo ""
+        
+        # Show rule set information
+        if [[ -d "/etc/nginx/owasp-modsecurity-crs" ]]; then
+            local crs_version=$(grep -h "ver" /etc/nginx/owasp-modsecurity-crs/crs-setup.conf 2>/dev/null | head -1 || echo "Unknown")
+            printf "OWASP CRS Version: %s\n" "$crs_version"
+            
+            local rule_count=$(find /etc/nginx/owasp-modsecurity-crs/rules -name "*.conf" -type f | wc -l)
+            printf "Rule files loaded: %s\n" "$rule_count"
+        fi
+        
+    else
+        printf "%s\n" "${RED}Configuration file not found: $config_file${NC}"
+    fi
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+# Main execution
+_check_modsecurity_installed
+
+while true; do
+    _show_status
+    _select_action
+    
+    case $action in
+        "enabled"|"detection"|"disabled")
+            _apply_change "$action"
+            echo ""
+            printf "%s\n" "Press any key to continue..."
+            read -n 1 -s
+            ;;
+        "view")
+            _view_configuration
+            ;;
+        "cancel")
+            break
+            ;;
+    esac
+done
+
+clear
+printf "%s\n" "Returning to WAF menu..."
+menu_waf
+
+_check_modsecurity_installed() {
+    if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        printf "%s\n" "${RED}ModSecurity is not installed. Please install it first.${NC}"
+        echo ""
+        printf "%s\n" "Press any key to return to WAF menu..."
+        read -n 1 -s
+        menu_waf
+        exit 1
+    fi
+}
+
+_get_current_status() {
+    local engine_status
+    engine_status=$(grep "SecRuleEngine" /etc/nginx/modsec/modsecurity.conf | awk '{print $2}')
+    
+    case "$engine_status" in
+        "On")
+            echo "enabled"
+            ;;
+        "DetectionOnly")
+            echo "detection"
+            ;;
+        "Off")
+            echo "disabled"
+            ;;
+        *)
+            echo "unknown"
+            ;;
+    esac
+}
+
+_set_modsecurity_status() {
+    local new_status="$1"
+    local config_file="/etc/nginx/modsec/modsecurity.conf"
+    
+    case "$new_status" in
+        "enable")
+            sed -i 's/SecRuleEngine .*/SecRuleEngine On/' "$config_file"
+            printf "%s\n" "${GREEN}ModSecurity enabled (blocking mode).${NC}"
+            ;;
+        "detection")
+            sed -i 's/SecRuleEngine .*/SecRuleEngine DetectionOnly/' "$config_file"
+            printf "%s\n" "${YELLOW}ModSecurity set to detection only mode.${NC}"
+            ;;
+        "disable")
+            sed -i 's/SecRuleEngine .*/SecRuleEngine Off/' "$config_file"
+            printf "%s\n" "${RED}ModSecurity disabled.${NC}"
+            ;;
+    esac
+}
+
+_show_status_info() {
+    local current_status
+    current_status=$(_get_current_status)
+    
+    printf "%s\n" "${GREEN}Current ModSecurity Status Information${NC}"
+    printf "%s\n" "${GREEN}=====================================${NC}"
+    echo ""
+    
+    case "$current_status" in
+        "enabled")
+            printf "%s\n" "Status: ${GREEN}Enabled (Blocking Mode)${NC}"
+            printf "%s\n" "Description: ModSecurity is actively blocking malicious requests."
+            ;;
+        "detection")
+            printf "%s\n" "Status: ${YELLOW}Detection Only Mode${NC}"
+            printf "%s\n" "Description: ModSecurity is logging threats but not blocking them."
+            ;;
+        "disabled")
+            printf "%s\n" "Status: ${RED}Disabled${NC}"
+            printf "%s\n" "Description: ModSecurity is completely turned off."
+            ;;
+        "unknown")
+            printf "%s\n" "Status: ${RED}Unknown/Error${NC}"
+            printf "%s\n" "Description: Unable to determine ModSecurity status."
+            ;;
+    esac
+    
+    echo ""
+    printf "%s\n" "Configuration file: /etc/nginx/modsec/modsecurity.conf"
+    printf "%s\n" "Log file: /var/log/modsec/audit.log"
+    echo ""
+}
+
+_select_action() {
+    local current_status
+    current_status=$(_get_current_status)
+    
+    printf "%s\n" "${GREEN}ModSecurity Control Panel${NC}"
+    printf "%s\n" "${GREEN}=========================${NC}"
+    echo ""
+    
+    _show_status_info
+    
+    printf "%s\n" "Available Actions:"
+    printf "%s\n" "1. Enable ModSecurity (Blocking Mode)"
+    printf "%s\n" "2. Set to Detection Only Mode"
+    printf "%s\n" "3. Disable ModSecurity"
+    printf "%s\n" "4. Show Status Information Only"
+    printf "%s\n" "0. Return to WAF Menu"
+    echo ""
+    
+    while true; do
+        read -r -p "Select an action [0-4]: " choice
+        
+        case "$choice" in
+            1)
+                if [[ "$current_status" == "enabled" ]]; then
+                    printf "%s\n" "${YELLOW}ModSecurity is already enabled.${NC}"
+                else
+                    _set_modsecurity_status "enable"
+                    action_performed=1
+                fi
+                break
+                ;;
+            2)
+                if [[ "$current_status" == "detection" ]]; then
+                    printf "%s\n" "${YELLOW}ModSecurity is already in detection only mode.${NC}"
+                else
+                    _set_modsecurity_status "detection"
+                    action_performed=1
+                fi
+                break
+                ;;
+            3)
+                if [[ "$current_status" == "disabled" ]]; then
+                    printf "%s\n" "${YELLOW}ModSecurity is already disabled.${NC}"
+                else
+                    while true; do
+                        read -r -p "Are you sure you want to disable ModSecurity? [y/N]: " confirm
+                        case "$confirm" in
+                            [yY]|[yY][eE][sS])
+                                _set_modsecurity_status "disable"
+                                action_performed=1
+                                break 2
+                                ;;
+                            [nN]|[nN][oO]|"")
+                                printf "%s\n" "${GREEN}Action cancelled.${NC}"
+                                break 2
+                                ;;
+                            *)
+                                printf "%s\n" "${RED}Please answer yes or no.${NC}"
+                                ;;
+                        esac
+                    done
+                fi
+                ;;
+            4)
+                # Status already shown above
+                ;;
+            0)
+                menu_waf
+                exit 0
+                ;;
+            *)
+                printf "%s\n" "${RED}Invalid option. Please try again.${NC}"
+                ;;
+        esac
+    done
+}
+
+_reload_nginx() {
+    printf "%s\n" "${GREEN}Testing nginx configuration...${NC}"
+    
+    if nginx -t; then
+        printf "%s\n" "${GREEN}Configuration test passed. Reloading nginx...${NC}"
+        systemctl reload nginx
+        printf "%s\n" "${GREEN}Nginx reloaded successfully.${NC}"
+    else
+        printf "%s\n" "${RED}Nginx configuration test failed!${NC}"
+        printf "%s\n" "${RED}Please check the configuration manually.${NC}"
+        return 1
+    fi
+}
+
+# Main execution
+clear
+printf "%s\n" "${GREEN}ModSecurity Enable/Disable Control${NC}"
+printf "%s\n" "${GREEN}==================================${NC}"
+echo ""
+
+# Check if ModSecurity is installed
+_check_modsecurity_installed
+
+# Select action
+action_performed=0
+_select_action
+
+# Reload nginx if an action was performed
+if [[ $action_performed -eq 1 ]]; then
+    echo ""
+    _reload_nginx
+fi
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf

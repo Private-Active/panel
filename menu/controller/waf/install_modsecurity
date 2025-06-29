@@ -1,0 +1,317 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/tinycp/menu/validate/rule
+source /var/tinycp/menu/helpers/function
+
+_detect_nginx_version() {
+    nginx_version=$(nginx -v 2>&1 | grep -o '[0-9.]*' | head -1)
+    echo "Detected Nginx version: ${nginx_version}"
+}
+
+_check_modsecurity_module() {
+    if nginx -V 2>&1 | grep -q "modsecurity-nginx"; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+_install_dependencies() {
+    printf "%s\n" "${GREEN}Installing ModSecurity dependencies...${NC}"
+    
+    apt-get update
+    apt-get install -y \
+        libmodsecurity3 \
+        libmodsecurity-dev \
+        libcurl4-openssl-dev \
+        libgeoip-dev \
+        libxml2-dev \
+        libpcre3-dev \
+        libyajl-dev \
+        uuid-dev \
+        libssl-dev \
+        build-essential \
+        git \
+        autoconf \
+        automake \
+        libtool \
+        pkg-config
+}
+
+_download_modsecurity() {
+    printf "%s\n" "${GREEN}Downloading ModSecurity...${NC}"
+    
+    cd /opt
+    
+    # Download ModSecurity
+    if [ ! -d "ModSecurity" ]; then
+        git clone --depth 1 https://github.com/SpiderLabs/ModSecurity.git
+    fi
+    
+    cd ModSecurity
+    git submodule init
+    git submodule update
+    
+    # Build ModSecurity
+    ./build.sh
+    ./configure --enable-standalone-module --disable-mlogc
+    make
+    make install
+}
+
+_download_modsecurity_nginx_connector() {
+    printf "%s\n" "${GREEN}Downloading ModSecurity-nginx connector...${NC}"
+    
+    cd /opt
+    
+    # Download ModSecurity-nginx connector
+    if [ ! -d "ModSecurity-nginx" ]; then
+        git clone --depth 1 https://github.com/SpiderLabs/ModSecurity-nginx.git
+    fi
+}
+
+_compile_nginx_with_modsecurity() {
+    printf "%s\n" "${GREEN}Compiling Nginx with ModSecurity...${NC}"
+    
+    # Get current nginx configuration
+    nginx_config=$(nginx -V 2>&1 | grep "configure arguments:" | sed 's/configure arguments://')
+    
+    # Download nginx source matching current version
+    nginx_version=$(_detect_nginx_version)
+    cd /opt
+    
+    if [ ! -d "nginx-${nginx_version}" ]; then
+        wget http://nginx.org/download/nginx-${nginx_version}.tar.gz
+        tar zxf nginx-${nginx_version}.tar.gz
+    fi
+    
+    cd nginx-${nginx_version}
+    
+    # Add ModSecurity module to nginx configuration
+    ./configure ${nginx_config} --add-dynamic-module=/opt/ModSecurity-nginx
+    
+    make modules
+    
+    # Copy the module to nginx modules directory
+    mkdir -p /usr/share/nginx/modules
+    cp objs/ngx_http_modsecurity_module.so /usr/share/nginx/modules/
+    
+    # Add load_module directive to nginx.conf
+    if ! grep -q "load_module.*ngx_http_modsecurity_module.so" /etc/nginx/nginx.conf; then
+        sed -i '1i load_module /usr/share/nginx/modules/ngx_http_modsecurity_module.so;' /etc/nginx/nginx.conf
+    fi
+}
+
+_setup_modsecurity_config() {
+    printf "%s\n" "${GREEN}Setting up ModSecurity configuration...${NC}"
+    
+    # Create ModSecurity directories
+    mkdir -p /etc/nginx/modsec
+    mkdir -p /etc/nginx/modsec/rules
+    mkdir -p /var/log/modsec
+    
+    # Copy basic configuration files
+    if [ -f "/opt/ModSecurity/modsecurity.conf-recommended" ]; then
+        cp /opt/ModSecurity/modsecurity.conf-recommended /etc/nginx/modsec/modsecurity.conf
+    fi
+    
+    if [ -f "/opt/ModSecurity/unicode.mapping" ]; then
+        cp /opt/ModSecurity/unicode.mapping /etc/nginx/modsec/
+    fi
+    
+    # Configure ModSecurity
+    sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/nginx/modsec/modsecurity.conf
+    sed -i 's|SecAuditLog .*|SecAuditLog /var/log/modsec/audit.log|' /etc/nginx/modsec/modsecurity.conf
+    sed -i 's/SecAuditLogType Serial/SecAuditLogType Concurrent/' /etc/nginx/modsec/modsecurity.conf
+    
+    # Create main ModSecurity configuration file
+    cat > /etc/nginx/modsec/main.conf << 'EOF'
+# Load ModSecurity Core Rules
+include /etc/nginx/modsec/modsecurity.conf
+include /etc/nginx/owasp-modsecurity-crs/crs-setup.conf
+include /etc/nginx/owasp-modsecurity-crs/rules/*.conf
+
+# Load custom rules
+include /etc/nginx/modsec/rules/*.conf
+EOF
+}
+
+_install_owasp_crs() {
+    printf "%s\n" "${GREEN}Installing OWASP ModSecurity Core Rule Set...${NC}"
+    
+    cd /etc/nginx
+    
+    # Download OWASP CRS
+    if [ ! -d "owasp-modsecurity-crs" ]; then
+        git clone https://github.com/coreruleset/coreruleset.git owasp-modsecurity-crs
+    fi
+    
+    cd owasp-modsecurity-crs
+    
+    # Setup CRS configuration
+    if [ ! -f "crs-setup.conf" ]; then
+        cp crs-setup.conf.example crs-setup.conf
+    fi
+    
+    # Setup exclusion rules
+    cd rules
+    if [ ! -f "RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf" ]; then
+        cp RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf.example RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
+    fi
+}
+
+_create_waf_management_scripts() {
+    printf "%s\n" "${GREEN}Creating WAF management scripts...${NC}"
+    
+    # Create WAF enable/disable script
+    cat > /etc/nginx/modsec/waf-control.sh << 'EOF'
+#!/bin/bash
+
+WAF_CONFIG="/etc/nginx/modsec/modsecurity.conf"
+
+case "$1" in
+    enable)
+        sed -i 's/SecRuleEngine .*/SecRuleEngine On/' "$WAF_CONFIG"
+        echo "ModSecurity enabled"
+        ;;
+    disable)
+        sed -i 's/SecRuleEngine .*/SecRuleEngine DetectionOnly/' "$WAF_CONFIG"
+        echo "ModSecurity disabled (detection only)"
+        ;;
+    off)
+        sed -i 's/SecRuleEngine .*/SecRuleEngine Off/' "$WAF_CONFIG"
+        echo "ModSecurity turned off"
+        ;;
+    status)
+        status=$(grep "SecRuleEngine" "$WAF_CONFIG" | awk '{print $2}')
+        echo "ModSecurity status: $status"
+        ;;
+    *)
+        echo "Usage: $0 {enable|disable|off|status}"
+        exit 1
+        ;;
+esac
+
+# Reload nginx if running
+if systemctl is-active --quiet nginx; then
+    nginx -t && systemctl reload nginx
+fi
+EOF
+    
+    chmod +x /etc/nginx/modsec/waf-control.sh
+}
+
+_test_configuration() {
+    printf "%s\n" "${GREEN}Testing configuration...${NC}"
+    
+    if nginx -t; then
+        printf "%s\n" "${GREEN}Nginx configuration test passed.${NC}"
+        return 0
+    else
+        printf "%s\n" "${RED}Nginx configuration test failed.${NC}"
+        return 1
+    fi
+}
+
+_main_install() {
+    printf "%s\n" "${GREEN}Starting ModSecurity installation...${NC}"
+    
+    # Check if already installed
+    if _check_modsecurity_module; then
+        printf "%s\n" "${YELLOW}ModSecurity module already installed. Updating configuration...${NC}"
+    else
+        printf "%s\n" "${GREEN}Installing ModSecurity module...${NC}"
+        
+        _install_dependencies
+        _download_modsecurity
+        _download_modsecurity_nginx_connector
+        _compile_nginx_with_modsecurity
+    fi
+    
+    _setup_modsecurity_config
+    _install_owasp_crs
+    _create_waf_management_scripts
+    
+    if _test_configuration; then
+        systemctl reload nginx
+        printf "%s\n" "${GREEN}ModSecurity installation completed successfully!${NC}"
+        printf "%s\n" "${YELLOW}Note: ModSecurity is enabled globally but not applied to domains yet.${NC}"
+        printf "%s\n" "${YELLOW}Use 'Domain WAF Management' to enable WAF for specific domains.${NC}"
+    else
+        printf "%s\n" "${RED}Installation completed but nginx configuration test failed.${NC}"
+        printf "%s\n" "${RED}Please check the configuration manually.${NC}"
+    fi
+}
+
+printf "%s\n" "${GREEN}ModSecurity Installation & Update${NC}"
+printf "%s\n" "${GREEN}=================================${NC}"
+echo ""
+
+# Detect nginx version
+_detect_nginx_version
+
+# Check if ModSecurity is already installed
+if _check_modsecurity_module; then
+    printf "%s\n" "${YELLOW}ModSecurity module is already installed.${NC}"
+    echo ""
+    printf "%s\n" "What would you like to do?"
+    PS3="Select an option [1-3]: "
+    options=("Update configuration only" "Reinstall completely" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+            "Update configuration only")
+                _setup_modsecurity_config
+                _install_owasp_crs
+                _create_waf_management_scripts
+                if _test_configuration; then
+                    systemctl reload nginx
+                    printf "%s\n" "${GREEN}Configuration updated successfully!${NC}"
+                fi
+                break
+                ;;
+            "Reinstall completely")
+                _main_install
+                break
+                ;;
+            "Cancel")
+                printf "%s\n" "${RED}Installation cancelled.${NC}"
+                break
+                ;;
+            *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+else
+    echo ""
+    while true; do
+        read -r -p "Do you want to install ModSecurity? [y/N]: " confirm
+        case $confirm in
+            [yY]|[yY][eE][sS])
+                _main_install
+                break
+                ;;
+            [nN]|[nN][oO]|"")
+                printf "%s\n" "${RED}Installation cancelled.${NC}"
+                break
+                ;;
+            *)
+                printf "%s\n" "${RED}Please answer yes or no.${NC}"
+                ;;
+        esac
+    done
+fi
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf

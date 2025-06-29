@@ -1,0 +1,1153 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/tinycp/menu/validate/rule
+source /var/tinycp/menu/helpers/function
+
+_get_modsecurity_version() {
+    if [[ -f "/usr/local/lib/libmodsecurity.so" ]]; then
+        strings /usr/local/lib/libmodsecurity.so | grep -E "ModSecurity v[0-9]" | head -1 || echo "Unknown"
+    else
+        echo "Not installed"
+    fi
+}
+
+_get_nginx_modsec_module_status() {
+    if nginx -V 2>&1 | grep -q "modsecurity"; then
+        echo "Loaded"
+    else
+        echo "Not loaded"
+    fi
+}
+
+_get_rule_engine_status() {
+    if [[ -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        local status=$(grep "^SecRuleEngine" /etc/nginx/modsec/modsecurity.conf | awk '{print $2}')
+        case "$status" in
+            "On") echo "Active (Blocking)" ;;
+            "DetectionOnly") echo "Detection Only" ;;
+            "Off") echo "Disabled" ;;
+            *) echo "Unknown" ;;
+        esac
+    else
+        echo "Not configured"
+    fi
+}
+
+_get_crs_info() {
+    if [[ -d "/etc/nginx/owasp-modsecurity-crs" ]]; then
+        if [[ -f "/etc/nginx/owasp-modsecurity-crs/crs-setup.conf" ]]; then
+            echo "Installed"
+        else
+            echo "Partially installed"
+        fi
+    else
+        echo "Not installed"
+    fi
+}
+
+_get_domains_with_waf() {
+    local count=0
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            if [ "$domain" != '*' ]; then
+                if grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                    ((count++))
+                fi
+            fi
+        done
+    fi
+    echo "$count"
+}
+
+_get_log_statistics() {
+    local audit_log="/var/log/modsec_audit/modsec_audit.log"
+    
+    if [[ -f "$audit_log" ]]; then
+        local total_blocks=$(grep -c "ModSecurity.*Intercepted" "$audit_log" 2>/dev/null || echo 0)
+        local blocks_today=$(grep "$(date +%d/%b/%Y)" "$audit_log" | grep -c "ModSecurity.*Intercepted" 2>/dev/null || echo 0)
+        local blocks_week=$(grep -E "$(date -d '7 days ago' +%d/%b/%Y)|$(date -d '6 days ago' +%d/%b/%Y)|$(date -d '5 days ago' +%d/%b/%Y)|$(date -d '4 days ago' +%d/%b/%Y)|$(date -d '3 days ago' +%d/%b/%Y)|$(date -d '2 days ago' +%d/%b/%Y)|$(date -d '1 day ago' +%d/%b/%Y)|$(date +%d/%b/%Y)" "$audit_log" | grep -c "ModSecurity.*Intercepted" 2>/dev/null || echo 0)
+        
+        echo "$total_blocks,$blocks_today,$blocks_week"
+    else
+        echo "0,0,0"
+    fi
+}
+
+_show_detailed_status() {
+    clear
+    printf "%s\n" "${GREEN}═══════════════════════════════════════════${NC}"
+    printf "%s\n" "${GREEN}           WAF Status & Configuration      ${NC}"
+    printf "%s\n" "${GREEN}═══════════════════════════════════════════${NC}"
+    echo ""
+    
+    # ModSecurity Installation Status
+    printf "%s\n" "${GREEN}📋 Installation Status${NC}"
+    printf "%s\n" "────────────────────────────────────────────"
+    
+    local modsec_version=$(_get_modsecurity_version)
+    local nginx_module_status=$(_get_nginx_modsec_module_status)
+    local rule_engine_status=$(_get_rule_engine_status)
+    local crs_status=$(_get_crs_info)
+    
+    printf "%-25s: " "ModSecurity Library"
+    if [[ "$modsec_version" != "Not installed" ]]; then
+        printf "%s%s%s\n" "${GREEN}" "$modsec_version" "${NC}"
+    else
+        printf "%s%s%s\n" "${RED}" "$modsec_version" "${NC}"
+    fi
+    
+    printf "%-25s: " "Nginx Module"
+    if [[ "$nginx_module_status" == "Loaded" ]]; then
+        printf "%s%s%s\n" "${GREEN}" "$nginx_module_status" "${NC}"
+    else
+        printf "%s%s%s\n" "${RED}" "$nginx_module_status" "${NC}"
+    fi
+    
+    printf "%-25s: " "Rule Engine"
+    case "$rule_engine_status" in
+        "Active (Blocking)")
+            printf "%s%s%s\n" "${GREEN}" "$rule_engine_status" "${NC}"
+            ;;
+        "Detection Only")
+            printf "%s%s%s\n" "${YELLOW}" "$rule_engine_status" "${NC}"
+            ;;
+        *)
+            printf "%s%s%s\n" "${RED}" "$rule_engine_status" "${NC}"
+            ;;
+    esac
+    
+    printf "%-25s: " "OWASP Core Rule Set"
+    if [[ "$crs_status" == "Installed" ]]; then
+        printf "%s%s%s\n" "${GREEN}" "$crs_status" "${NC}"
+    else
+        printf "%s%s%s\n" "${RED}" "$crs_status" "${NC}"
+    fi
+    
+    echo ""
+    
+    # Domain Configuration
+    printf "%s\n" "${GREEN}🌐 Domain Configuration${NC}"
+    printf "%s\n" "────────────────────────────────────────────"
+    
+    local total_domains=0
+    local waf_enabled_count=$(_get_domains_with_waf)
+    
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        total_domains=$(ls -A "${USER_DIR}" | grep "\.conf$" | wc -l)
+    fi
+    
+    printf "%-25s: %s\n" "Total domains" "$total_domains"
+    printf "%-25s: " "WAF-enabled domains"
+    if [[ $waf_enabled_count -gt 0 ]]; then
+        printf "%s%s%s\n" "${GREEN}" "$waf_enabled_count" "${NC}"
+    else
+        printf "%s%s%s\n" "${YELLOW}" "$waf_enabled_count" "${NC}"
+    fi
+    
+    # List WAF-enabled domains
+    if [[ $waf_enabled_count -gt 0 ]]; then
+        printf "\n%s\n" "WAF-enabled domains:"
+        if [[ "$(ls -A "${USER_DIR}")" ]]; then
+            _cd_dir "${USER_DIR}"
+            for entry in .*.conf; do
+                domain=${entry/./}
+                domain=${domain//.conf/}
+                if [ "$domain" != '*' ]; then
+                    if grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                        # Check if domain has custom whitelist rules
+                        local whitelist_count=0
+                        if [[ -d "/etc/nginx/modsec/whitelist/${domain}" ]]; then
+                            whitelist_count=$(find "/etc/nginx/modsec/whitelist/${domain}" -name "*.conf" -type f 2>/dev/null | wc -l)
+                        fi
+                        
+                        if [[ $whitelist_count -gt 0 ]]; then
+                            printf "  • %-30s [%s%d whitelist rules%s]\n" "$domain" "${GREEN}" "$whitelist_count" "${NC}"
+                        else
+                            printf "  • %-30s [%sdefault rules%s]\n" "$domain" "${YELLOW}" "${NC}"
+                        fi
+                    fi
+                fi
+            done
+        fi
+    fi
+    
+    echo ""
+    
+    # Statistics
+    printf "%s\n" "${GREEN}📊 Security Statistics${NC}"
+    printf "%s\n" "────────────────────────────────────────────"
+    
+    IFS=',' read -r total_blocks blocks_today blocks_week <<< "$(_get_log_statistics)"
+    
+    printf "%-25s: " "Total blocks"
+    if [[ $total_blocks -gt 0 ]]; then
+        printf "%s%s%s\n" "${RED}" "$total_blocks" "${NC}"
+    else
+        printf "%s%s%s\n" "${GREEN}" "$total_blocks" "${NC}"
+    fi
+    
+    printf "%-25s: " "Blocks today"
+    if [[ $blocks_today -gt 0 ]]; then
+        printf "%s%s%s\n" "${RED}" "$blocks_today" "${NC}"
+    else
+        printf "%s%s%s\n" "${GREEN}" "$blocks_today" "${NC}"
+    fi
+    
+    printf "%-25s: " "Blocks this week"
+    if [[ $blocks_week -gt 0 ]]; then
+        printf "%s%s%s\n" "${RED}" "$blocks_week" "${NC}"
+    else
+        printf "%s%s%s\n" "${GREEN}" "$blocks_week" "${NC}"
+    fi
+    
+    # Show top blocked IPs if any
+    local audit_log="/var/log/modsec_audit/modsec_audit.log"
+    if [[ -f "$audit_log" && $total_blocks -gt 0 ]]; then
+        echo ""
+        printf "%s\n" "Top 5 blocked IPs:"
+        grep -oP 'client: \K[0-9.]+' "$audit_log" | sort | uniq -c | sort -nr | head -5 | while read -r count ip; do
+            printf "  %s%-15s%s (%s blocks)\n" "${RED}" "$ip" "${NC}" "$count"
+        done
+    fi
+    
+    echo ""
+    
+    # Configuration Files
+    printf "%s\n" "${GREEN}📁 Configuration Files${NC}"
+    printf "%s\n" "────────────────────────────────────────────"
+    
+    local config_files=(
+        "/etc/nginx/modsec/modsecurity.conf:Main configuration"
+        "/etc/nginx/modsec/main.conf:Rule includes"
+        "/etc/nginx/owasp-modsecurity-crs/crs-setup.conf:CRS setup"
+        "/var/log/modsec_audit/modsec_audit.log:Audit log"
+        "/var/log/modsec_audit/modsec_debug.log:Debug log"
+    )
+    
+    for config_file_info in "${config_files[@]}"; do
+        IFS=':' read -r file_path file_desc <<< "$config_file_info"
+        printf "%-25s: " "$file_desc"
+        if [[ -f "$file_path" ]]; then
+            local file_size=$(du -h "$file_path" 2>/dev/null | cut -f1)
+            printf "%s✓ Exists%s (%s)\n" "${GREEN}" "${NC}" "$file_size"
+        else
+            printf "%s✗ Missing%s\n" "${RED}" "${NC}"
+        fi
+    done
+    
+    echo ""
+    
+    # System Resources
+    printf "%s\n" "${GREEN}💾 System Resources${NC}"
+    printf "%s\n" "────────────────────────────────────────────"
+    
+    # Check if ModSecurity processes are consuming significant memory
+    local modsec_memory=$(ps aux | grep -E "(nginx|modsecurity)" | grep -v grep | awk '{sum+=$6} END {printf "%.1f", sum/1024}' 2>/dev/null || echo "0")
+    printf "%-25s: %s MB\n" "WAF memory usage" "$modsec_memory"
+    
+    # Check log file sizes
+    local total_log_size=0
+    if [[ -d "/var/log/modsec_audit" ]]; then
+        total_log_size=$(du -sm /var/log/modsec_audit 2>/dev/null | cut -f1 || echo 0)
+    fi
+    printf "%-25s: %s MB\n" "Log files size" "$total_log_size"
+    
+    # Check if log rotation is configured
+    if [[ -f "/etc/logrotate.d/modsecurity" ]]; then
+        printf "%-25s: %s✓ Configured%s\n" "Log rotation" "${GREEN}" "${NC}"
+    else
+        printf "%-25s: %s✗ Not configured%s\n" "Log rotation" "${YELLOW}" "${NC}"
+    fi
+    
+    echo ""
+    
+    # Recommendations
+    printf "%s\n" "${GREEN}💡 Recommendations${NC}"
+    printf "%s\n" "────────────────────────────────────────────"
+    
+    local recommendations=()
+    
+    if [[ "$rule_engine_status" == "Disabled" || "$rule_engine_status" == "Not configured" ]]; then
+        recommendations+=("Enable ModSecurity rule engine for protection")
+    fi
+    
+    if [[ $waf_enabled_count -eq 0 ]]; then
+        recommendations+=("Enable WAF for at least one domain")
+    fi
+    
+    if [[ "$crs_status" != "Installed" ]]; then
+        recommendations+=("Install OWASP Core Rule Set for comprehensive protection")
+    fi
+    
+    if [[ ! -f "/etc/logrotate.d/modsecurity" ]]; then
+        recommendations+=("Configure log rotation to prevent disk space issues")
+    fi
+    
+    if [[ $total_log_size -gt 100 ]]; then
+        recommendations+=("Consider cleaning up old log files (${total_log_size}MB)")
+    fi
+    
+    if [[ $blocks_today -gt 50 ]]; then
+        recommendations+=("High block count today - review for false positives")
+    fi
+    
+    if [ ${#recommendations[@]} -eq 0 ]; then
+        printf "%s\n" "${GREEN}✓ All systems appear to be properly configured${NC}"
+    else
+        for rec in "${recommendations[@]}"; do
+            printf "%s• %s%s\n" "${YELLOW}" "$rec" "${NC}"
+        done
+    fi
+}
+
+_show_configuration_details() {
+    clear
+    printf "%s\n" "${GREEN}WAF Configuration Details${NC}"
+    printf "%s\n" "${GREEN}=========================${NC}"
+    echo ""
+    
+    local config_file="/etc/nginx/modsec/modsecurity.conf"
+    
+    if [[ ! -f "$config_file" ]]; then
+        printf "%s\n" "${RED}ModSecurity configuration file not found.${NC}"
+        return
+    fi
+    
+    printf "%s\n" "Key configuration parameters:"
+    echo ""
+    
+    # Important configuration parameters
+    local params=(
+        "SecRuleEngine:Rule Engine Status"
+        "SecRequestBodyAccess:Request Body Access"
+        "SecResponseBodyAccess:Response Body Access"
+        "SecRequestBodyLimit:Request Body Limit"
+        "SecRequestBodyNoFilesLimit:Request Body No Files Limit"
+        "SecAuditEngine:Audit Engine"
+        "SecAuditLogType:Audit Log Type"
+        "SecDebugLogLevel:Debug Log Level"
+    )
+    
+    for param_info in "${params[@]}"; do
+        IFS=':' read -r param desc <<< "$param_info"
+        local value=$(grep "^$param" "$config_file" | awk '{for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/ $//')
+        
+        if [[ -n "$value" ]]; then
+            printf "%-30s: %s\n" "$desc" "$value"
+        else
+            printf "%-30s: %sNot set%s\n" "$desc" "${YELLOW}" "${NC}"
+        fi
+    done
+    
+    echo ""
+    
+    # Rule set information
+    printf "%s\n" "Rule set information:"
+    echo ""
+    
+    if [[ -d "/etc/nginx/owasp-modsecurity-crs" ]]; then
+        local rule_files=$(find /etc/nginx/owasp-modsecurity-crs/rules -name "*.conf" -type f | wc -l)
+        printf "%-30s: %s\n" "OWASP CRS rule files" "$rule_files"
+        
+        local custom_rules=$(find /etc/nginx/modsec/rules -name "*.conf" -type f 2>/dev/null | wc -l)
+        printf "%-30s: %s\n" "Custom rule files" "$custom_rules"
+        
+        local total_whitelist=0
+        if [[ -d "/etc/nginx/modsec/whitelist" ]]; then
+            total_whitelist=$(find /etc/nginx/modsec/whitelist -name "*.conf" -type f 2>/dev/null | wc -l)
+        fi
+        printf "%-30s: %s\n" "Whitelist rule files" "$total_whitelist"
+    fi
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+_select_action() {
+    printf "%s\n" "Select an action:"
+    PS3="Enter your choice [1-4]: "
+    options=("View detailed status" "View configuration details" "Test WAF configuration" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "View detailed status")
+            action="detailed"
+            break
+            ;;
+        "View configuration details")
+            action="config"
+            break
+            ;;
+        "Test WAF configuration")
+            action="test"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_test_waf_configuration() {
+    clear
+    printf "%s\n" "${GREEN}Testing WAF Configuration${NC}"
+    printf "%s\n" "${GREEN}=========================${NC}"
+    echo ""
+    
+    local test_results=()
+    local test_passed=0
+    local test_total=0
+    
+    # Test 1: Nginx configuration
+    ((test_total++))
+    printf "Testing Nginx configuration... "
+    if nginx -t &>/dev/null; then
+        printf "%s✓ PASS%s\n" "${GREEN}" "${NC}"
+        ((test_passed++))
+    else
+        printf "%s✗ FAIL%s\n" "${RED}" "${NC}"
+        test_results+=("Nginx configuration test failed")
+    fi
+    
+    # Test 2: ModSecurity module loading
+    ((test_total++))
+    printf "Testing ModSecurity module... "
+    if nginx -V 2>&1 | grep -q "modsecurity"; then
+        printf "%s✓ PASS%s\n" "${GREEN}" "${NC}"
+        ((test_passed++))
+    else
+        printf "%s✗ FAIL%s\n" "${RED}" "${NC}"
+        test_results+=("ModSecurity module not loaded in Nginx")
+    fi
+    
+    # Test 3: Configuration file syntax
+    ((test_total++))
+    printf "Testing ModSecurity config syntax... "
+    if [[ -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        # Basic syntax check - look for common configuration errors
+        if grep -q "SecRuleEngine" /etc/nginx/modsec/modsecurity.conf; then
+            printf "%s✓ PASS%s\n" "${GREEN}" "${NC}"
+            ((test_passed++))
+        else
+            printf "%s✗ FAIL%s\n" "${RED}" "${NC}"
+            test_results+=("SecRuleEngine directive missing")
+        fi
+    else
+        printf "%s✗ FAIL%s\n" "${RED}" "${NC}"
+        test_results+=("ModSecurity configuration file missing")
+    fi
+    
+    # Test 4: OWASP CRS availability
+    ((test_total++))
+    printf "Testing OWASP Core Rule Set... "
+    if [[ -d "/etc/nginx/owasp-modsecurity-crs" && -f "/etc/nginx/owasp-modsecurity-crs/crs-setup.conf" ]]; then
+        printf "%s✓ PASS%s\n" "${GREEN}" "${NC}"
+        ((test_passed++))
+    else
+        printf "%s✗ FAIL%s\n" "${RED}" "${NC}"
+        test_results+=("OWASP Core Rule Set not properly installed")
+    fi
+    
+    # Test 5: Log directory permissions
+    ((test_total++))
+    printf "Testing log directory permissions... "
+    if [[ -d "/var/log/modsec_audit" && -w "/var/log/modsec_audit" ]]; then
+        printf "%s✓ PASS%s\n" "${GREEN}" "${NC}"
+        ((test_passed++))
+    else
+        printf "%s✗ FAIL%s\n" "${RED}" "${NC}"
+        test_results+=("Log directory missing or not writable")
+    fi
+    
+    # Test 6: Domain WAF configuration
+    ((test_total++))
+    printf "Testing domain WAF configurations... "
+    local waf_domains_count=$(_get_domains_with_waf)
+    if [[ $waf_domains_count -gt 0 ]]; then
+        printf "%s✓ PASS%s (%d domains)\n" "${GREEN}" "${NC}" "$waf_domains_count"
+        ((test_passed++))
+    else
+        printf "%s⚠ WARNING%s\n" "${YELLOW}" "${NC}"
+        test_results+=("No domains have WAF enabled")
+    fi
+    
+    echo ""
+    
+    # Test summary
+    printf "%s\n" "Test Summary:"
+    printf "Tests passed: %s%d/%d%s\n" "${GREEN}" "$test_passed" "$test_total" "${NC}"
+    
+    if [[ $test_passed -eq $test_total ]]; then
+        printf "%s\n" "${GREEN}✓ All tests passed! WAF is properly configured.${NC}"
+    else
+        printf "%s\n" "${YELLOW}⚠ Some tests failed or need attention:${NC}"
+        for result in "${test_results[@]}"; do
+            printf "%s• %s%s\n" "${RED}" "$result" "${NC}"
+        done
+    fi
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+# Main execution
+clear
+
+# Check if ModSecurity is installed
+if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+    printf "%s\n" "${RED}ModSecurity is not installed.${NC}"
+    printf "%s\n" "${YELLOW}Please install ModSecurity first using the WAF installation menu.${NC}"
+    echo ""
+    printf "%s\n" "Press any key to return to WAF menu..."
+    read -n 1 -s
+    menu_waf
+    exit 1
+fi
+
+_show_detailed_status
+
+echo ""
+_select_action
+
+case $action in
+    "detailed")
+        _show_detailed_status
+        ;;
+    "config")
+        _show_configuration_details
+        ;;
+    "test")
+        _test_waf_configuration
+        ;;
+    "cancel")
+        ;;
+esac
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf
+
+_check_modsecurity_installed() {
+    if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        printf "%s\n" "${RED}ModSecurity is not installed.${NC}"
+        return 1
+    fi
+    return 0
+}
+
+_get_modsecurity_status() {
+    if ! _check_modsecurity_installed; then
+        echo "not_installed"
+        return
+    fi
+    
+    local engine_status
+    engine_status=$(grep "SecRuleEngine" /etc/nginx/modsec/modsecurity.conf | awk '{print $2}')
+    
+    case "$engine_status" in
+        "On")
+            echo "enabled"
+            ;;
+        "DetectionOnly")
+            echo "detection"
+            ;;
+        "Off")
+            echo "disabled"
+            ;;
+        *)
+            echo "unknown"
+            ;;
+    esac
+}
+
+_get_nginx_module_status() {
+    if nginx -V 2>&1 | grep -q "modsecurity-nginx"; then
+        echo "installed"
+    else
+        echo "not_installed"
+    fi
+}
+
+_show_system_status() {
+    clear
+    printf "%s\n" "${GREEN}WAF System Status & Configuration${NC}"
+    printf "%s\n" "${GREEN}==================================${NC}"
+    echo ""
+    
+    # ModSecurity installation status
+    local modsec_status=$(_get_modsecurity_status)
+    local nginx_module_status=$(_get_nginx_module_status)
+    
+    printf "%s\n" "${GREEN}=== ModSecurity Status ===${NC}"
+    
+    case "$modsec_status" in
+        "not_installed")
+            printf "%s\n" "ModSecurity: ${RED}Not Installed${NC}"
+            ;;
+        "enabled")
+            printf "%s\n" "ModSecurity: ${GREEN}Enabled (Blocking Mode)${NC}"
+            ;;
+        "detection")
+            printf "%s\n" "ModSecurity: ${YELLOW}Detection Only Mode${NC}"
+            ;;
+        "disabled")
+            printf "%s\n" "ModSecurity: ${RED}Disabled${NC}"
+            ;;
+        "unknown")
+            printf "%s\n" "ModSecurity: ${RED}Unknown Status${NC}"
+            ;;
+    esac
+    
+    case "$nginx_module_status" in
+        "installed")
+            printf "%s\n" "Nginx Module: ${GREEN}Installed${NC}"
+            ;;
+        "not_installed")
+            printf "%s\n" "Nginx Module: ${RED}Not Installed${NC}"
+            ;;
+    esac
+    
+    echo ""
+    
+    # OWASP CRS status
+    printf "%s\n" "${GREEN}=== OWASP Core Rule Set ===${NC}"
+    if [[ -d "/etc/nginx/owasp-modsecurity-crs" ]]; then
+        printf "%s\n" "OWASP CRS: ${GREEN}Installed${NC}"
+        local crs_version
+        if [[ -f "/etc/nginx/owasp-modsecurity-crs/.git/config" ]]; then
+            crs_version=$(cd /etc/nginx/owasp-modsecurity-crs && git describe --tags 2>/dev/null || echo "Unknown")
+            printf "%s\n" "Version: ${GREEN}${crs_version}${NC}"
+        fi
+        
+        # Count active rules
+        local rule_count
+        rule_count=$(find /etc/nginx/owasp-modsecurity-crs/rules -name "*.conf" | wc -l)
+        printf "%s\n" "Active rule files: ${GREEN}${rule_count}${NC}"
+    else
+        printf "%s\n" "OWASP CRS: ${RED}Not Installed${NC}"
+    fi
+    
+    echo ""
+    
+    # Domain-specific WAF status
+    printf "%s\n" "${GREEN}=== Domain WAF Status ===${NC}"
+    local waf_enabled_count=0
+    local total_domains=0
+    
+    if [[ "$(ls -A "${USER_DIR}" 2>/dev/null)" ]]; then
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            if [ "$domain" != '*' ]; then
+                ((total_domains++))
+                if grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                    ((waf_enabled_count++))
+                    
+                    # Check for custom rules
+                    custom_rules=""
+                    if [[ -f "/etc/nginx/modsec/domains/${domain}/custom.conf" && -s "/etc/nginx/modsec/domains/${domain}/custom.conf" ]]; then
+                        local custom_count
+                        custom_count=$(grep -c "SecRule\|SecAction" "/etc/nginx/modsec/domains/${domain}/custom.conf" 2>/dev/null || echo "0")
+                        custom_rules=" ${YELLOW}[${custom_count} custom rules]${NC}"
+                    fi
+                    
+                    # Check for whitelist rules
+                    whitelist_rules=""
+                    if [[ -f "/etc/nginx/modsec/domains/${domain}/whitelist.conf" && -s "/etc/nginx/modsec/domains/${domain}/whitelist.conf" ]]; then
+                        local whitelist_count
+                        whitelist_count=$(grep -c "SecRule\|SecRuleRemoveById" "/etc/nginx/modsec/domains/${domain}/whitelist.conf" 2>/dev/null || echo "0")
+                        whitelist_rules=" ${GREEN}[${whitelist_count} whitelist rules]${NC}"
+                    fi
+                    
+                    printf "%s\n" "  ${GREEN}✓${NC} ${domain}${custom_rules}${whitelist_rules}"
+                fi
+            fi
+        done
+    fi
+    
+    printf "%s\n" "Total domains: ${GREEN}${total_domains}${NC}"
+    printf "%s\n" "WAF-enabled domains: ${GREEN}${waf_enabled_count}${NC}"
+    
+    echo ""
+    
+    # Configuration files status
+    printf "%s\n" "${GREEN}=== Configuration Files ===${NC}"
+    
+    local config_files=(
+        "/etc/nginx/modsec/modsecurity.conf:Main ModSecurity Config"
+        "/etc/nginx/modsec/main.conf:ModSecurity Include File"
+        "/etc/nginx/owasp-modsecurity-crs/crs-setup.conf:CRS Setup"
+        "/etc/nginx/modsec/rules/custom_global.conf:Global Custom Rules"
+    )
+    
+    for config_info in "${config_files[@]}"; do
+        IFS=':' read -r config_file config_desc <<< "$config_info"
+        if [[ -f "$config_file" ]]; then
+            local file_size
+            file_size=$(du -h "$config_file" | cut -f1)
+            printf "%s\n" "  ${GREEN}✓${NC} ${config_desc}: ${file_size}"
+        else
+            printf "%s\n" "  ${RED}✗${NC} ${config_desc}: Not found"
+        fi
+    done
+    
+    echo ""
+    
+    # Log files status
+    printf "%s\n" "${GREEN}=== Log Files ===${NC}"
+    
+    local log_files=(
+        "/var/log/modsec/audit.log:ModSecurity Audit Log"
+        "/var/log/nginx/error.log:Nginx Error Log"
+    )
+    
+    for log_info in "${log_files[@]}"; do
+        IFS=':' read -r log_file log_desc <<< "$log_info"
+        if [[ -f "$log_file" ]]; then
+            local file_size
+            file_size=$(du -h "$log_file" | cut -f1)
+            local line_count
+            line_count=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+            printf "%s\n" "  ${GREEN}✓${NC} ${log_desc}: ${file_size} (${line_count} lines)"
+        else
+            printf "%s\n" "  ${RED}✗${NC} ${log_desc}: Not found"
+        fi
+    done
+    
+    echo ""
+    
+    # Memory and performance status
+    printf "%s\n" "${GREEN}=== Performance Information ===${NC}"
+    
+    # Nginx process count
+    local nginx_processes
+    nginx_processes=$(pgrep nginx | wc -l)
+    printf "%s\n" "Nginx processes: ${GREEN}${nginx_processes}${NC}"
+    
+    # Check if nginx is running
+    if systemctl is-active --quiet nginx; then
+        printf "%s\n" "Nginx status: ${GREEN}Running${NC}"
+    else
+        printf "%s\n" "Nginx status: ${RED}Not running${NC}"
+    fi
+    
+    # Disk usage of WAF files
+    local waf_disk_usage
+    waf_disk_usage=$(du -sh /etc/nginx/modsec 2>/dev/null | cut -f1 || echo "Unknown")
+    printf "%s\n" "WAF files disk usage: ${GREEN}${waf_disk_usage}${NC}"
+    
+    echo ""
+}
+
+_show_configuration_details() {
+    printf "%s\n" "${GREEN}Detailed Configuration Information${NC}"
+    printf "%s\n" "${GREEN}==================================${NC}"
+    echo ""
+    
+    if ! _check_modsecurity_installed; then
+        printf "%s\n" "${RED}ModSecurity is not installed.${NC}"
+        return
+    fi
+    
+    printf "%s\n" "${GREEN}=== ModSecurity Configuration ===${NC}"
+    
+    # Main configuration settings
+    local config_file="/etc/nginx/modsec/modsecurity.conf"
+    
+    printf "%s\n" "Configuration file: ${config_file}"
+    echo ""
+    
+    # Key settings
+    local rule_engine
+    rule_engine=$(grep "SecRuleEngine" "$config_file" | head -1)
+    printf "%s\n" "Engine: ${GREEN}${rule_engine}${NC}"
+    
+    local request_body_access
+    request_body_access=$(grep "SecRequestBodyAccess" "$config_file" | head -1)
+    printf "%s\n" "Request Body Access: ${GREEN}${request_body_access}${NC}"
+    
+    local response_body_access
+    response_body_access=$(grep "SecResponseBodyAccess" "$config_file" | head -1)
+    printf "%s\n" "Response Body Access: ${GREEN}${response_body_access}${NC}"
+    
+    local audit_engine
+    audit_engine=$(grep "SecAuditEngine" "$config_file" | head -1)
+    printf "%s\n" "Audit Engine: ${GREEN}${audit_engine}${NC}"
+    
+    local audit_log
+    audit_log=$(grep "SecAuditLog" "$config_file" | head -1)
+    printf "%s\n" "Audit Log: ${GREEN}${audit_log}${NC}"
+    
+    echo ""
+    
+    # Rule statistics
+    printf "%s\n" "${GREEN}=== Rule Statistics ===${NC}"
+    
+    if [[ -d "/etc/nginx/owasp-modsecurity-crs/rules" ]]; then
+        local total_crs_rules
+        total_crs_rules=$(find /etc/nginx/owasp-modsecurity-crs/rules -name "*.conf" -exec grep -c "SecRule" {} \; | awk '{sum+=$1} END {print sum}')
+        printf "%s\n" "OWASP CRS rules: ${GREEN}${total_crs_rules}${NC}"
+    fi
+    
+    local global_custom_rules=0
+    if [[ -f "/etc/nginx/modsec/rules/custom_global.conf" ]]; then
+        global_custom_rules=$(grep -c "SecRule\|SecAction" "/etc/nginx/modsec/rules/custom_global.conf" 2>/dev/null || echo "0")
+    fi
+    printf "%s\n" "Global custom rules: ${GREEN}${global_custom_rules}${NC}"
+    
+    local domain_custom_rules=0
+    local domain_whitelist_rules=0
+    if [[ -d "/etc/nginx/modsec/domains" ]]; then
+        for domain_dir in /etc/nginx/modsec/domains/*/; do
+            if [[ -d "$domain_dir" ]]; then
+                if [[ -f "${domain_dir}custom.conf" ]]; then
+                    local count
+                    count=$(grep -c "SecRule\|SecAction" "${domain_dir}custom.conf" 2>/dev/null || echo "0")
+                    ((domain_custom_rules += count))
+                fi
+                if [[ -f "${domain_dir}whitelist.conf" ]]; then
+                    local count
+                    count=$(grep -c "SecRule\|SecRuleRemoveById" "${domain_dir}whitelist.conf" 2>/dev/null || echo "0")
+                    ((domain_whitelist_rules += count))
+                fi
+            fi
+        done
+    fi
+    printf "%s\n" "Domain custom rules: ${GREEN}${domain_custom_rules}${NC}"
+    printf "%s\n" "Domain whitelist rules: ${GREEN}${domain_whitelist_rules}${NC}"
+    
+    echo ""
+    
+    # Nginx integration
+    printf "%s\n" "${GREEN}=== Nginx Integration ===${NC}"
+    
+    if nginx -V 2>&1 | grep -q "modsecurity-nginx"; then
+        printf "%s\n" "ModSecurity module: ${GREEN}Compiled into Nginx${NC}"
+        
+        # Check if module is loaded
+        if grep -q "load_module.*ngx_http_modsecurity_module.so" /etc/nginx/nginx.conf; then
+            printf "%s\n" "Module loading: ${GREEN}Configured in nginx.conf${NC}"
+        else
+            printf "%s\n" "Module loading: ${YELLOW}Not found in nginx.conf${NC}"
+        fi
+    else
+        printf "%s\n" "ModSecurity module: ${RED}Not compiled into Nginx${NC}"
+    fi
+    
+    echo ""
+}
+
+_show_recent_activity() {
+    printf "%s\n" "${GREEN}Recent WAF Activity${NC}"
+    printf "%s\n" "${GREEN}===================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec/audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${YELLOW}No ModSecurity audit log found.${NC}"
+        return
+    fi
+    
+    # Recent blocked requests
+    printf "%s\n" "${GREEN}=== Recent Blocked Requests (Last 10) ===${NC}"
+    
+    local recent_blocks
+    recent_blocks=$(grep -E "\--.*-A--" "$audit_log" | tail -10)
+    
+    if [[ -z "$recent_blocks" ]]; then
+        printf "%s\n" "${YELLOW}No recent blocked requests found.${NC}"
+    else
+        local count=1
+        while IFS= read -r line; do
+            timestamp=$(echo "$line" | grep -o '\[[^]]*\]' | head -1)
+            printf "%s\n" "${count}. ${GREEN}${timestamp}${NC}"
+            ((count++))
+        done <<< "$recent_blocks"
+    fi
+    
+    echo ""
+    
+    # Summary of today's activity
+    printf "%s\n" "${GREEN}=== Today's Activity Summary ===${NC}"
+    
+    local today
+    today=$(date "+%d/%b/%Y")
+    
+    local today_blocks
+    today_blocks=$(grep "$today" "$audit_log" 2>/dev/null | grep -c "\--.*-A--" || echo "0")
+    printf "%s\n" "Blocked requests today: ${RED}${today_blocks}${NC}"
+    
+    # Top attacked domains today
+    if [[ $today_blocks -gt 0 ]]; then
+        printf "%s\n" "Top attacked domains today:"
+        grep "$today" "$audit_log" 2>/dev/null | \
+            grep '\[hostname "' | \
+            sed 's/.*\[hostname "\([^"]*\)"\].*/\1/' | \
+            sort | uniq -c | sort -rn | head -5 | \
+            while read -r count domain; do
+                printf "  %s: %s attacks\n" "${GREEN}${domain}${NC}" "${RED}${count}${NC}"
+            done
+    fi
+    
+    echo ""
+}
+
+_manage_configuration() {
+    printf "%s\n" "${GREEN}Configuration Management${NC}"
+    printf "%s\n" "${GREEN}=======================${NC}"
+    echo ""
+    
+    printf "%s\n" "Available actions:"
+    printf "%s\n" "1. Edit main ModSecurity configuration"
+    printf "%s\n" "2. Edit OWASP CRS setup"
+    printf "%s\n" "3. View configuration syntax"
+    printf "%s\n" "4. Test configuration"
+    printf "%s\n" "5. Reload configuration"
+    echo ""
+    
+    read -r -p "Select action [1-5]: " config_action
+    
+    case "$config_action" in
+        1)
+            local config_file="/etc/nginx/modsec/modsecurity.conf"
+            if [[ -f "$config_file" ]]; then
+                printf "%s\n" "${GREEN}Opening main ModSecurity configuration...${NC}"
+                printf "%s\n" "Press any key to open nano editor..."
+                read -n 1 -s
+                nano "$config_file"
+            else
+                printf "%s\n" "${RED}Configuration file not found.${NC}"
+            fi
+            ;;
+        2)
+            local crs_config="/etc/nginx/owasp-modsecurity-crs/crs-setup.conf"
+            if [[ -f "$crs_config" ]]; then
+                printf "%s\n" "${GREEN}Opening OWASP CRS setup configuration...${NC}"
+                printf "%s\n" "Press any key to open nano editor..."
+                read -n 1 -s
+                nano "$crs_config"
+            else
+                printf "%s\n" "${RED}OWASP CRS configuration file not found.${NC}"
+            fi
+            ;;
+        3)
+            printf "%s\n" "${GREEN}ModSecurity Configuration Syntax:${NC}"
+            printf "%s\n" "${GREEN}=================================${NC}"
+            echo ""
+            printf "%s\n" "SecRule VARIABLES \"@OPERATOR OPERATOR_ARGUMENT\" \"ACTIONS\""
+            echo ""
+            printf "%s\n" "Common Variables:"
+            printf "%s\n" "  ARGS - Request arguments"
+            printf "%s\n" "  REQUEST_URI - Request URI"
+            printf "%s\n" "  REQUEST_HEADERS - Request headers"
+            printf "%s\n" "  REMOTE_ADDR - Client IP address"
+            echo ""
+            printf "%s\n" "Common Operators:"
+            printf "%s\n" "  @contains - Contains string"
+            printf "%s\n" "  @beginsWith - Begins with string"
+            printf "%s\n" "  @endsWith - Ends with string"
+            printf "%s\n" "  @rx - Regular expression"
+            printf "%s\n" "  @ipMatch - IP address match"
+            echo ""
+            printf "%s\n" "Common Actions:"
+            printf "%s\n" "  deny - Block request"
+            printf "%s\n" "  allow - Allow request"
+            printf "%s\n" "  pass - Continue processing"
+            printf "%s\n" "  log - Log only"
+            ;;
+        4)
+            printf "%s\n" "${GREEN}Testing configuration...${NC}"
+            if nginx -t; then
+                printf "%s\n" "${GREEN}Configuration test passed.${NC}"
+            else
+                printf "%s\n" "${RED}Configuration test failed.${NC}"
+                nginx -t
+            fi
+            ;;
+        5)
+            printf "%s\n" "${GREEN}Reloading configuration...${NC}"
+            if nginx -t; then
+                systemctl reload nginx
+                printf "%s\n" "${GREEN}Configuration reloaded successfully.${NC}"
+            else
+                printf "%s\n" "${RED}Configuration test failed. Not reloading.${NC}"
+                nginx -t
+            fi
+            ;;
+        *)
+            printf "%s\n" "${RED}Invalid action.${NC}"
+            ;;
+    esac
+}
+
+_select_status_action() {
+    clear
+    printf "%s\n" "${GREEN}WAF Status & Configuration${NC}"
+    printf "%s\n" "${GREEN}==========================${NC}"
+    echo ""
+    printf "%s\n" "Select information to view:"
+    PS3="Enter your choice [1-6]: "
+    options=("System status overview" "Configuration details" "Recent activity" "Manage configuration" "Export status report" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "System status overview")
+            action="status"
+            break
+            ;;
+        "Configuration details")
+            action="config"
+            break
+            ;;
+        "Recent activity")
+            action="activity"
+            break
+            ;;
+        "Manage configuration")
+            action="manage"
+            break
+            ;;
+        "Export status report")
+            action="export"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_export_status_report() {
+    local report_file="/tmp/waf_status_report_$(date +%Y%m%d_%H%M%S).txt"
+    
+    printf "%s\n" "${GREEN}Generating WAF status report...${NC}"
+    
+    {
+        echo "WAF Status Report"
+        echo "=================="
+        echo "Generated on: $(date)"
+        echo "Server: $(hostname)"
+        echo ""
+        
+        echo "=== ModSecurity Status ==="
+        local modsec_status=$(_get_modsecurity_status)
+        echo "ModSecurity: $modsec_status"
+        
+        local nginx_module_status=$(_get_nginx_module_status)
+        echo "Nginx Module: $nginx_module_status"
+        echo ""
+        
+        echo "=== Domain WAF Status ==="
+        if [[ "$(ls -A "${USER_DIR}" 2>/dev/null)" ]]; then
+            _cd_dir "${USER_DIR}"
+            for entry in .*.conf; do
+                domain=${entry/./}
+                domain=${domain//.conf/}
+                if [ "$domain" != '*' ]; then
+                    if grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                        echo "WAF Enabled: $domain"
+                    fi
+                fi
+            done
+        fi
+        echo ""
+        
+        echo "=== Configuration Files ==="
+        local config_files=(
+            "/etc/nginx/modsec/modsecurity.conf"
+            "/etc/nginx/modsec/main.conf"
+            "/etc/nginx/owasp-modsecurity-crs/crs-setup.conf"
+        )
+        
+        for config_file in "${config_files[@]}"; do
+            if [[ -f "$config_file" ]]; then
+                echo "Found: $config_file"
+            else
+                echo "Missing: $config_file"
+            fi
+        done
+        echo ""
+        
+        echo "=== Recent Activity ==="
+        local audit_log="/var/log/modsec/audit.log"
+        if [[ -f "$audit_log" ]]; then
+            local today
+            today=$(date "+%d/%b/%Y")
+            local today_blocks
+            today_blocks=$(grep "$today" "$audit_log" 2>/dev/null | grep -c "\--.*-A--" || echo "0")
+            echo "Blocked requests today: $today_blocks"
+        else
+            echo "No audit log found"
+        fi
+        
+    } > "$report_file"
+    
+    printf "%s\n" "${GREEN}Report generated: ${report_file}${NC}"
+    printf "%s\n" "Report content:"
+    echo ""
+    cat "$report_file"
+}
+
+# Main execution
+clear
+printf "%s\n" "${GREEN}WAF Status & Configuration${NC}"
+printf "%s\n" "${GREEN}==========================${NC}"
+echo ""
+
+# Initialize variables
+action=""
+
+# Select action
+_select_status_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "%s\n" "${RED}Operation cancelled.${NC}"
+else
+    case "${action}" in
+        "status")
+            _show_system_status
+            ;;
+        "config")
+            _show_configuration_details
+            ;;
+        "activity")
+            _show_recent_activity
+            ;;
+        "manage")
+            _manage_configuration
+            ;;
+        "export")
+            _export_status_report
+            ;;
+    esac
+fi
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf

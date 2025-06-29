@@ -1,0 +1,989 @@
+#!/bin/bash
+
+######################################################################
+#           Auto Install & Optimize LEMP Stack on Ubuntu             #
+#                                                                    #
+#                Author: TinyActive - Base On HOSTVN.VN Scripts      #
+#                  Website: https://github.com/TinyActive/panel      #
+#                                                                    #
+#              Please do not remove copyright. Thank!                #
+#  Please do not copy under any circumstance for commercial reason!  #
+######################################################################
+
+source /var/tinycp/menu/validate/rule
+source /var/tinycp/menu/helpers/function
+
+_check_modsecurity_installed() {
+    if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        printf "%s\n" "${RED}ModSecurity is not installed. Please install it first.${NC}"
+        echo ""
+        printf "%s\n" "Press any key to return to WAF menu..."
+        read -n 1 -s
+        menu_waf
+        exit 1
+    fi
+}
+
+_select_log_analysis_action() {
+    clear
+    printf "%s\n" "${GREEN}WAF Log Analysis${NC}"
+    printf "%s\n" "${GREEN}================${NC}"
+    echo ""
+    printf "%s\n" "Select analysis option:"
+    PS3="Enter your choice [1-8]: "
+    options=(
+        "View recent WAF blocks"
+        "Analyze blocks by domain"
+        "Top blocked IPs"
+        "Most triggered rules"
+        "Generate whitelist from logs"
+        "Real-time log monitoring"
+        "Log statistics summary"
+        "Cancel"
+    )
+    select opt in "${options[@]}"; do
+        case $opt in
+        "View recent WAF blocks")
+            action="recent"
+            break
+            ;;
+        "Analyze blocks by domain")
+            action="by_domain"
+            break
+            ;;
+        "Top blocked IPs")
+            action="blocked_ips"
+            break
+            ;;
+        "Most triggered rules")
+            action="triggered_rules"
+            break
+            ;;
+        "Generate whitelist from logs")
+            action="generate_whitelist"
+            break
+            ;;
+        "Real-time log monitoring")
+            action="realtime"
+            break
+            ;;
+        "Log statistics summary")
+            action="statistics"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_view_recent_blocks() {
+    clear
+    printf "%s\n" "${GREEN}Recent WAF Blocks (Last 50)${NC}"
+    printf "%s\n" "${GREEN}==========================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec_audit/modsec_audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${YELLOW}No audit log found. WAF might not be logging or no blocks occurred yet.${NC}"
+        return
+    fi
+    
+    # Parse recent blocks
+    tail -1000 "$audit_log" | grep -E "(ModSecurity|Intercepted)" | tail -50 | while read -r line; do
+        # Extract timestamp, IP, URI, and rule ID
+        local timestamp=$(echo "$line" | grep -oP '\[\K[^\]]+')
+        local client_ip=$(echo "$line" | grep -oP 'client: \K[0-9.]+')
+        local uri=$(echo "$line" | grep -oP 'request: "[^"]*" to "\K[^"]+')
+        local rule_id=$(echo "$line" | grep -oP 'id "\K[0-9]+')
+        
+        if [[ -n "$timestamp" && -n "$client_ip" ]]; then
+            printf "%s | %s | %s | Rule: %s\n" \
+                "$timestamp" \
+                "${RED}$client_ip${NC}" \
+                "$uri" \
+                "${YELLOW}$rule_id${NC}"
+        fi
+    done
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+_analyze_by_domain() {
+    clear
+    printf "%s\n" "${GREEN}WAF Blocks by Domain${NC}"
+    printf "%s\n" "${GREEN}====================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec_audit/modsec_audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${YELLOW}No audit log found.${NC}"
+        return
+    fi
+    
+    # Get domains with WAF enabled
+    local waf_domains=()
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain=${entry/./}
+            domain=${domain//.conf/}
+            if [ "$domain" != '*' ]; then
+                if grep -q "modsecurity on" "${VHOST_DIR}/${domain}.conf" 2>/dev/null; then
+                    waf_domains+=("${domain}")
+                fi
+            fi
+        done
+    fi
+    
+    if [ ${#waf_domains[@]} -eq 0 ]; then
+        printf "%s\n" "${YELLOW}No domains with WAF enabled found.${NC}"
+        return
+    fi
+    
+    # Analyze blocks for each domain
+    for domain in "${waf_domains[@]}"; do
+        local block_count=$(grep -c "$domain" "$audit_log" 2>/dev/null || echo 0)
+        printf "%-30s : %s blocks\n" "$domain" "${RED}$block_count${NC}"
+        
+        # Show top 3 blocked URIs for this domain
+        if [[ $block_count -gt 0 ]]; then
+            printf "  Top blocked URIs:\n"
+            grep "$domain" "$audit_log" | grep -oP 'uri "[^"]*"' | sort | uniq -c | sort -nr | head -3 | while read -r count uri; do
+                printf "    %s %s\n" "${YELLOW}$count${NC}" "$uri"
+            done
+            echo ""
+        fi
+    done
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+_show_blocked_ips() {
+    clear
+    printf "%s\n" "${GREEN}Top Blocked IP Addresses${NC}"
+    printf "%s\n" "${GREEN}========================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec_audit/modsec_audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${YELLOW}No audit log found.${NC}"
+        return
+    fi
+    
+    printf "%-15s %-10s %s\n" "IP Address" "Blocks" "Last Seen"
+    printf "%s\n" "----------------------------------------"
+    
+    # Extract and count blocked IPs
+    grep -oP 'client: \K[0-9.]+' "$audit_log" | sort | uniq -c | sort -nr | head -20 | while read -r count ip; do
+        # Get last block time for this IP
+        local last_seen=$(grep "$ip" "$audit_log" | tail -1 | grep -oP '\[\K[^\]]+' | cut -d' ' -f1)
+        printf "%-15s %-10s %s\n" "${RED}$ip${NC}" "$count" "$last_seen"
+    done
+    
+    echo ""
+    printf "%s\n" "Would you like to block any of these IPs permanently? [y/N]"
+    read -r response
+    if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        echo ""
+        printf "%s\n" "Enter IP address to block (or press Enter to skip):"
+        read -r ip_to_block
+        if [[ -n "$ip_to_block" ]]; then
+            # Add IP to iptables/ufw
+            if command -v ufw >/dev/null 2>&1; then
+                ufw deny from "$ip_to_block"
+                printf "%s\n" "${GREEN}IP $ip_to_block blocked using UFW${NC}"
+            else
+                iptables -A INPUT -s "$ip_to_block" -j DROP
+                printf "%s\n" "${GREEN}IP $ip_to_block blocked using iptables${NC}"
+            fi
+        fi
+    fi
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+_show_triggered_rules() {
+    clear
+    printf "%s\n" "${GREEN}Most Triggered WAF Rules${NC}"
+    printf "%s\n" "${GREEN}========================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec_audit/modsec_audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${YELLOW}No audit log found.${NC}"
+        return
+    fi
+    
+    printf "%-10s %-10s %s\n" "Rule ID" "Triggers" "Description"
+    printf "%s\n" "-----------------------------------------------"
+    
+    # Extract and count triggered rules
+    grep -oP 'id "\K[0-9]+' "$audit_log" | sort | uniq -c | sort -nr | head -15 | while read -r count rule_id; do
+        # Try to get rule description from OWASP CRS files
+        local description="Unknown"
+        if [[ -d "/etc/nginx/owasp-modsecurity-crs/rules" ]]; then
+            description=$(grep -h "id:$rule_id" /etc/nginx/owasp-modsecurity-crs/rules/*.conf 2>/dev/null | \
+                         grep -oP 'msg:"[^"]*"' | head -1 | sed 's/msg:"//' | sed 's/"//')
+            if [[ -z "$description" ]]; then
+                description="Custom/Unknown Rule"
+            fi
+        fi
+        
+        printf "%-10s %-10s %s\n" "${YELLOW}$rule_id${NC}" "$count" "$description"
+    done
+    
+    echo ""
+    printf "%s\n" "Would you like to create whitelist rules for any of these? [y/N]"
+    read -r response
+    if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        printf "%s\n" "Enter Rule ID to create whitelist for (or press Enter to skip):"
+        read -r rule_to_whitelist
+        if [[ -n "$rule_to_whitelist" ]]; then
+            _create_rule_whitelist "$rule_to_whitelist"
+        fi
+    fi
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+_create_rule_whitelist() {
+    local rule_id="$1"
+    
+    # Select domain for whitelist
+    domain=""
+    _select_domain_with_waf
+    
+    if [[ -n "$domain" ]]; then
+        local whitelist_file="/etc/nginx/modsec/whitelist/${domain}/rule_${rule_id}_whitelist.conf"
+        
+        cat > "$whitelist_file" << EOF
+# Whitelist for rule $rule_id in domain $domain
+# Generated on $(date)
+
+# Disable rule $rule_id for this domain
+SecRuleRemoveById $rule_id
+
+# Alternative: Disable rule only for specific URIs
+# SecRule REQUEST_URI "@beginsWith /wp-admin" \\
+#     "id:9$(shuf -i 100-999 -n 1),phase:1,pass,nolog,\\
+#     ctl:ruleRemoveById=$rule_id"
+EOF
+        
+        printf "%s\n" "${GREEN}Whitelist rule created: $whitelist_file${NC}"
+        printf "%s\n" "${YELLOW}Please test your website to ensure it works correctly.${NC}"
+        
+        # Reload nginx
+        if nginx -t &>/dev/null; then
+            systemctl reload nginx
+            printf "%s\n" "${GREEN}Nginx reloaded successfully.${NC}"
+        else
+            printf "%s\n" "${RED}Nginx configuration test failed. Please check manually.${NC}"
+        fi
+    fi
+}
+
+_generate_whitelist_from_logs() {
+    clear
+    printf "%s\n" "${GREEN}Generate Whitelist from Logs${NC}"
+    printf "%s\n" "${GREEN}============================${NC}"
+    echo ""
+    
+    # Select domain
+    domain=""
+    _select_domain_with_waf
+    
+    if [[ -z "$domain" ]]; then
+        printf "%s\n" "${RED}No domain selected.${NC}"
+        return
+    fi
+    
+    printf "%s\n" "Select log input method:"
+    PS3="Enter your choice [1-3]: "
+    options=("Paste log content directly" "Upload log file" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Paste log content directly")
+            _generate_from_pasted_logs "$domain"
+            break
+            ;;
+        "Upload log file")
+            _generate_from_log_file "$domain"
+            break
+            ;;
+        "Cancel")
+            return
+            ;;
+        *) printf "%s\n" "${RED}Invalid option.${NC}";;
+        esac
+    done
+}
+
+_generate_from_pasted_logs() {
+    local domain="$1"
+    
+    clear
+    printf "%s\n" "${GREEN}Paste ModSecurity log content for ${domain}${NC}"
+    printf "%s\n" "${GREEN}====================================================${NC}"
+    echo ""
+    printf "%s\n" "Paste your ModSecurity log content below."
+    printf "%s\n" "Press Ctrl+D when finished, or type 'DONE' on a new line:"
+    echo ""
+    
+    # Read multiline input
+    local log_content=""
+    while IFS= read -r line; do
+        if [[ "$line" == "DONE" ]]; then
+            break
+        fi
+        log_content+="$line"$'\n'
+    done
+    
+    if [[ -n "$log_content" ]]; then
+        _process_log_content "$log_content" "$domain"
+    else
+        printf "%s\n" "${RED}No log content provided.${NC}"
+    fi
+}
+
+_generate_from_log_file() {
+    local domain="$1"
+    
+    printf "%s\n" "Enter full path to log file:"
+    read -r log_file_path
+    
+    if [[ ! -f "$log_file_path" ]]; then
+        printf "%s\n" "${RED}File not found: $log_file_path${NC}"
+        return
+    fi
+    
+    local log_content=$(cat "$log_file_path")
+    _process_log_content "$log_content" "$domain"
+}
+
+_process_log_content() {
+    local log_content="$1"
+    local domain="$2"
+    
+    printf "%s\n" "${GREEN}Processing log content for ${domain}...${NC}"
+    
+    # Create whitelist rules directory if not exists
+    mkdir -p "/etc/nginx/modsec/whitelist/${domain}"
+    
+    local whitelist_file="/etc/nginx/modsec/whitelist/${domain}/auto_generated_$(date +%Y%m%d_%H%M%S).conf"
+    
+    cat > "$whitelist_file" << EOF
+# Auto-generated whitelist rules for ${domain}
+# Generated on $(date)
+# Based on ModSecurity log analysis
+
+EOF
+
+    local rule_id=9300
+    
+    # Extract unique rule IDs and URIs
+    echo "$log_content" | grep -oP 'id "\K[0-9]+' | sort -u | while read -r triggered_rule; do
+        local sample_uri=$(echo "$log_content" | grep "id \"$triggered_rule\"" | grep -oP 'uri "\K[^"]+' | head -1)
+        local sample_method=$(echo "$log_content" | grep "id \"$triggered_rule\"" | grep -oP 'method "\K[^"]+' | head -1)
+        
+        if [[ -n "$sample_uri" ]]; then
+            cat >> "$whitelist_file" << EOF
+# Whitelist for rule $triggered_rule on $sample_uri
+SecRule REQUEST_URI "@beginsWith $sample_uri" \\
+    "id:$rule_id,phase:1,pass,nolog,\\
+    ctl:ruleRemoveById=$triggered_rule"
+
+EOF
+            ((rule_id++))
+        fi
+    done
+    
+    # Add common WordPress whitelisting patterns
+    cat >> "$whitelist_file" << EOF
+# Common WordPress admin whitelisting
+SecRule REQUEST_URI "@beginsWith /wp-admin" \\
+    "id:$rule_id,phase:1,pass,nolog,\\
+    ctl:ruleRemoveTargetById=920273;ARGS:action,\\
+    ctl:ruleRemoveTargetById=920274;ARGS:action"
+
+EOF
+    
+    printf "%s\n" "${GREEN}Whitelist rules generated: $whitelist_file${NC}"
+    printf "%s\n" "${YELLOW}Please review the generated rules before applying them.${NC}"
+    
+    echo ""
+    printf "%s\n" "Would you like to view the generated rules? [y/N]"
+    read -r response
+    if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        cat "$whitelist_file"
+        echo ""
+    fi
+    
+    printf "%s\n" "Apply these whitelist rules now? [y/N]"
+    read -r apply_response
+    if [[ "$apply_response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        if nginx -t &>/dev/null; then
+            systemctl reload nginx
+            printf "%s\n" "${GREEN}Whitelist rules applied successfully!${NC}"
+        else
+            printf "%s\n" "${RED}Nginx configuration test failed. Rules not applied.${NC}"
+            nginx -t
+        fi
+    fi
+}
+
+_realtime_monitoring() {
+    clear
+    printf "%s\n" "${GREEN}Real-time WAF Log Monitoring${NC}"
+    printf "%s\n" "${GREEN}============================${NC}"
+    echo ""
+    printf "%s\n" "Monitoring WAF logs in real-time. Press Ctrl+C to stop."
+    echo ""
+    
+    local audit_log="/var/log/modsec_audit/modsec_audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${YELLOW}No audit log found. Creating monitoring for future logs...${NC}"
+        touch "$audit_log"
+    fi
+    
+    tail -f "$audit_log" | while read -r line; do
+        if echo "$line" | grep -q "ModSecurity\|Intercepted"; then
+            local timestamp=$(echo "$line" | grep -oP '\[\K[^\]]+')
+            local client_ip=$(echo "$line" | grep -oP 'client: \K[0-9.]+')
+            local uri=$(echo "$line" | grep -oP 'uri "\K[^"]+')
+            local rule_id=$(echo "$line" | grep -oP 'id "\K[0-9]+')
+            
+            printf "[%s] ${RED}BLOCKED${NC} - IP: %s | URI: %s | Rule: %s\n" \
+                "$timestamp" \
+                "${RED}$client_ip${NC}" \
+                "$uri" \
+                "${YELLOW}$rule_id${NC}"
+        fi
+    done
+}
+
+_show_statistics() {
+    clear
+    printf "%s\n" "${GREEN}WAF Log Statistics Summary${NC}"
+    printf "%s\n" "${GREEN}==========================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec_audit/modsec_audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${YELLOW}No audit log found.${NC}"
+        return
+    fi
+    
+    # Basic statistics
+    local total_blocks=$(grep -c "ModSecurity\|Intercepted" "$audit_log" 2>/dev/null || echo 0)
+    local unique_ips=$(grep -oP 'client: \K[0-9.]+' "$audit_log" | sort -u | wc -l)
+    local unique_rules=$(grep -oP 'id "\K[0-9]+' "$audit_log" | sort -u | wc -l)
+    
+    printf "Total blocks: %s\n" "${RED}$total_blocks${NC}"
+    printf "Unique IPs blocked: %s\n" "${RED}$unique_ips${NC}"
+    printf "Unique rules triggered: %s\n" "${YELLOW}$unique_rules${NC}"
+    echo ""
+    
+    # Blocks by day (last 7 days)
+    printf "%s\n" "Blocks by day (last 7 days):"
+    for i in {6..0}; do
+        local date_check=$(date -d "$i days ago" +%d/%b/%Y)
+        local daily_blocks=$(grep "$date_check" "$audit_log" | grep -c "ModSecurity\|Intercepted" || echo 0)
+        printf "  %s: %s blocks\n" "$date_check" "$daily_blocks"
+    done
+    
+    echo ""
+    printf "%s\n" "Press any key to continue..."
+    read -n 1 -s
+}
+
+_select_domain_with_waf() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "Select domain with WAF enabled:"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain_check=${entry/./}
+            domain_check=${domain_check//.conf/}
+            if [ "$domain_check" != '*' ]; then
+                if grep -q "modsecurity on" "${VHOST_DIR}/${domain_check}.conf" 2>/dev/null; then
+                    domains+=("${domain_check}")
+                fi
+            fi
+        done
+        
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}No domains found with WAF enabled.${NC}")
+        else
+            PS3="${INPUT_SELECT} [0 = Cancel]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+# Main execution
+_check_modsecurity_installed
+
+_select_log_analysis_action
+
+case $action in
+    "recent")
+        _view_recent_blocks
+        ;;
+    "by_domain")
+        _analyze_by_domain
+        ;;
+    "blocked_ips")
+        _show_blocked_ips
+        ;;
+    "triggered_rules")
+        _show_triggered_rules
+        ;;
+    "generate_whitelist")
+        _generate_whitelist_from_logs
+        ;;
+    "realtime")
+        _realtime_monitoring
+        ;;
+    "statistics")
+        _show_statistics
+        ;;
+    "cancel")
+        printf "%s\n" "${GREEN}Operation cancelled.${NC}"
+        ;;
+esac
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf
+
+_check_modsecurity_installed() {
+    if [[ ! -f "/etc/nginx/modsec/modsecurity.conf" ]]; then
+        printf "%s\n" "${RED}ModSecurity is not installed. Please install it first.${NC}"
+        echo ""
+        printf "%s\n" "Press any key to return to WAF menu..."
+        read -n 1 -s
+        menu_waf
+        exit 1
+    fi
+}
+
+_select_log_action() {
+    clear
+    printf "%s\n" "${GREEN}WAF Log Analysis${NC}"
+    printf "%s\n" "${GREEN}================${NC}"
+    echo ""
+    printf "%s\n" "Select log analysis type:"
+    PS3="Enter your choice [1-6]: "
+    options=("Real-time WAF monitoring" "Blocked requests summary" "Top attacking IPs" "Most triggered rules" "Domain-specific analysis" "Cancel")
+    select opt in "${options[@]}"; do
+        case $opt in
+        "Real-time WAF monitoring")
+            action="realtime"
+            break
+            ;;
+        "Blocked requests summary")
+            action="summary"
+            break
+            ;;
+        "Top attacking IPs")
+            action="top_ips"
+            break
+            ;;
+        "Most triggered rules")
+            action="top_rules"
+            break
+            ;;
+        "Domain-specific analysis")
+            action="domain_analysis"
+            break
+            ;;
+        "Cancel")
+            action="cancel"
+            break
+            ;;
+        *) printf "%s\n" "${RED}Invalid option. Please try again.${NC}";;
+        esac
+    done
+}
+
+_realtime_monitoring() {
+    clear
+    printf "%s\n" "${GREEN}Real-time WAF Monitoring${NC}"
+    printf "%s\n" "${GREEN}========================${NC}"
+    echo ""
+    printf "%s\n" "${YELLOW}Monitoring ModSecurity logs in real-time...${NC}"
+    printf "%s\n" "${YELLOW}Press Ctrl+C to stop monitoring${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec/audit.log"
+    local error_log="/var/log/nginx/error.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${RED}ModSecurity audit log not found: ${audit_log}${NC}"
+        return 1
+    fi
+    
+    # Monitor both audit log and nginx error log
+    (
+        echo "=== ModSecurity Audit Log ==="
+        tail -f "$audit_log" 2>/dev/null | while read -r line; do
+            if [[ "$line" =~ --.*-A-- ]]; then
+                printf "%s\n" "${RED}[$(date '+%H:%M:%S')] New WAF event detected${NC}"
+            elif [[ "$line" =~ \[id\ \"[0-9]+\"\] ]]; then
+                rule_id=$(echo "$line" | grep -o '\[id "[0-9]*"\]' | grep -o '[0-9]*')
+                printf "%s\n" "${YELLOW}  Rule ID: ${rule_id}${NC}"
+            elif [[ "$line" =~ \[msg\ \".*\"\] ]]; then
+                msg=$(echo "$line" | grep -o '\[msg "[^"]*"\]' | sed 's/\[msg "\(.*\)"\]/\1/')
+                printf "%s\n" "${GREEN}  Message: ${msg}${NC}"
+            elif [[ "$line" =~ \[hostname\ \".*\"\] ]]; then
+                hostname=$(echo "$line" | grep -o '\[hostname "[^"]*"\]' | sed 's/\[hostname "\(.*\)"\]/\1/')
+                printf "%s\n" "${CYAN}  Domain: ${hostname}${NC}"
+            fi
+        done
+    ) &
+    
+    monitor_pid=$!
+    
+    # Wait for user interrupt
+    trap "kill $monitor_pid 2>/dev/null; exit 0" INT
+    wait $monitor_pid
+}
+
+_blocked_requests_summary() {
+    clear
+    printf "%s\n" "${GREEN}Blocked Requests Summary${NC}"
+    printf "%s\n" "${GREEN}========================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec/audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${RED}ModSecurity audit log not found: ${audit_log}${NC}"
+        return 1
+    fi
+    
+    printf "%s\n" "Analyzing blocked requests from the last 24 hours..."
+    echo ""
+    
+    # Get timestamp for 24 hours ago
+    local yesterday
+    yesterday=$(date -d "24 hours ago" "+%d/%b/%Y")
+    
+    # Count total blocked requests
+    local total_blocked
+    total_blocked=$(grep -c "\--.*-A--" "$audit_log" 2>/dev/null || echo "0")
+    
+    printf "%s\n" "${GREEN}Total blocked requests in log: ${total_blocked}${NC}"
+    
+    # Top 10 blocked domains
+    printf "%s\n" "${GREEN}Top 10 targeted domains:${NC}"
+    grep '\[hostname "' "$audit_log" 2>/dev/null | \
+        sed 's/.*\[hostname "\([^"]*\)"\].*/\1/' | \
+        sort | uniq -c | sort -rn | head -10 | \
+        while read -r count domain; do
+            printf "  %s: %s requests\n" "${GREEN}${domain}${NC}" "${RED}${count}${NC}"
+        done
+    
+    echo ""
+    
+    # Top 10 attack types
+    printf "%s\n" "${GREEN}Top 10 attack types:${NC}"
+    grep '\[msg "' "$audit_log" 2>/dev/null | \
+        sed 's/.*\[msg "\([^"]*\)"\].*/\1/' | \
+        sort | uniq -c | sort -rn | head -10 | \
+        while read -r count msg; do
+            printf "  %s (%s times)\n" "${YELLOW}${msg}${NC}" "${RED}${count}${NC}"
+        done
+    
+    echo ""
+    
+    # Severity distribution
+    printf "%s\n" "${GREEN}Severity distribution:${NC}"
+    grep '\[severity "' "$audit_log" 2>/dev/null | \
+        sed 's/.*\[severity "\([^"]*\)"\].*/\1/' | \
+        sort | uniq -c | sort -rn | \
+        while read -r count severity; do
+            case "$severity" in
+                "EMERGENCY"|"ALERT"|"CRITICAL")
+                    color="${RED}"
+                    ;;
+                "ERROR"|"WARNING")
+                    color="${YELLOW}"
+                    ;;
+                *)
+                    color="${GREEN}"
+                    ;;
+            esac
+            printf "  %s: %s requests\n" "${color}${severity}${NC}" "${count}"
+        done
+}
+
+_top_attacking_ips() {
+    clear
+    printf "%s\n" "${GREEN}Top Attacking IP Addresses${NC}"
+    printf "%s\n" "${GREEN}==========================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec/audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${RED}ModSecurity audit log not found: ${audit_log}${NC}"
+        return 1
+    fi
+    
+    printf "%s\n" "Top 20 IP addresses with most blocked requests:"
+    echo ""
+    
+    grep '\[client ' "$audit_log" 2>/dev/null | \
+        sed 's/.*\[client \([0-9.]*\)\].*/\1/' | \
+        sort | uniq -c | sort -rn | head -20 | \
+        while read -r count ip; do
+            # Try to get country info if geoiplookup is available
+            country=""
+            if command -v geoiplookup >/dev/null 2>&1; then
+                country=$(geoiplookup "$ip" 2>/dev/null | head -1 | cut -d':' -f2 | sed 's/^ *//')
+            fi
+            
+            printf "  %s: %s requests %s\n" "${RED}${ip}${NC}" "${YELLOW}${count}${NC}" "${GREEN}${country}${NC}"
+        done
+    
+    echo ""
+    printf "%s\n" "${YELLOW}Note: Consider blocking repeated offenders using the firewall.${NC}"
+}
+
+_most_triggered_rules() {
+    clear
+    printf "%s\n" "${GREEN}Most Triggered WAF Rules${NC}"
+    printf "%s\n" "${GREEN}========================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec/audit.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${RED}ModSecurity audit log not found: ${audit_log}${NC}"
+        return 1
+    fi
+    
+    printf "%s\n" "Top 15 most triggered rules:"
+    echo ""
+    
+    # Extract rule IDs and count them
+    grep '\[id "' "$audit_log" 2>/dev/null | \
+        sed 's/.*\[id "\([0-9]*\)"\].*/\1/' | \
+        sort | uniq -c | sort -rn | head -15 | \
+        while read -r count rule_id; do
+            # Try to get rule description
+            msg=$(grep -A5 -B5 "\[id \"$rule_id\"\]" "$audit_log" 2>/dev/null | \
+                  grep '\[msg "' | head -1 | \
+                  sed 's/.*\[msg "\([^"]*\)"\].*/\1/' | head -1)
+            
+            if [[ -z "$msg" ]]; then
+                msg="(No description available)"
+            fi
+            
+            printf "  Rule %s: %s times\n" "${RED}${rule_id}${NC}" "${YELLOW}${count}${NC}"
+            printf "    %s\n" "${GREEN}${msg}${NC}"
+            echo ""
+        done
+    
+    echo ""
+    printf "%s\n" "${YELLOW}Note: Frequently triggered rules may need whitelisting for legitimate traffic.${NC}"
+}
+
+_domain_specific_analysis() {
+    if [[ -z "${domain}" || "${domain}" == "0" ]]; then
+        printf "%s\n" "${RED}Operation cancelled.${NC}"
+        return
+    fi
+    
+    clear
+    printf "%s\n" "${GREEN}Domain-Specific WAF Analysis: ${domain}${NC}"
+    printf "%s\n" "${GREEN}========================================${NC}"
+    echo ""
+    
+    local audit_log="/var/log/modsec/audit.log"
+    local domain_log="/home/$(grep -w "username" "${USER_DIR}/.${domain}.conf" | cut -f2 -d'=')/${domain}/logs/error.log"
+    
+    if [[ ! -f "$audit_log" ]]; then
+        printf "%s\n" "${RED}ModSecurity audit log not found: ${audit_log}${NC}"
+        return 1
+    fi
+    
+    # Extract domain-specific data
+    local domain_data
+    domain_data=$(grep -E "(${domain}|www\.${domain})" "$audit_log" 2>/dev/null)
+    
+    if [[ -z "$domain_data" ]]; then
+        printf "%s\n" "${YELLOW}No WAF events found for ${domain} in the audit log.${NC}"
+        
+        # Check domain error log for ModSecurity entries
+        if [[ -f "$domain_log" ]]; then
+            echo ""
+            printf "%s\n" "Checking domain error log for ModSecurity entries..."
+            local modsec_errors
+            modsec_errors=$(grep -i "modsecurity" "$domain_log" 2>/dev/null | tail -10)
+            
+            if [[ -n "$modsec_errors" ]]; then
+                printf "%s\n" "${GREEN}Recent ModSecurity entries in domain error log:${NC}"
+                echo "$modsec_errors"
+            else
+                printf "%s\n" "${YELLOW}No ModSecurity entries found in domain error log.${NC}"
+            fi
+        fi
+        return
+    fi
+    
+    # Count blocked requests for this domain
+    local blocked_count
+    blocked_count=$(echo "$domain_data" | grep -c "\--.*-A--")
+    printf "%s\n" "${GREEN}Total blocked requests for ${domain}: ${blocked_count}${NC}"
+    echo ""
+    
+    # Top attacking IPs for this domain
+    printf "%s\n" "${GREEN}Top attacking IPs for ${domain}:${NC}"
+    echo "$domain_data" | grep '\[client ' | \
+        sed 's/.*\[client \([0-9.]*\)\].*/\1/' | \
+        sort | uniq -c | sort -rn | head -10 | \
+        while read -r count ip; do
+            printf "  %s: %s requests\n" "${RED}${ip}${NC}" "${YELLOW}${count}${NC}"
+        done
+    
+    echo ""
+    
+    # Top triggered rules for this domain
+    printf "%s\n" "${GREEN}Top triggered rules for ${domain}:${NC}"
+    echo "$domain_data" | grep '\[id "' | \
+        sed 's/.*\[id "\([0-9]*\)"\].*/\1/' | \
+        sort | uniq -c | sort -rn | head -10 | \
+        while read -r count rule_id; do
+            msg=$(echo "$domain_data" | grep -A5 -B5 "\[id \"$rule_id\"\]" | \
+                  grep '\[msg "' | head -1 | \
+                  sed 's/.*\[msg "\([^"]*\)"\].*/\1/')
+            printf "  Rule %s: %s times\n" "${RED}${rule_id}${NC}" "${YELLOW}${count}${NC}"
+            if [[ -n "$msg" ]]; then
+                printf "    %s\n" "${GREEN}${msg}${NC}"
+            fi
+        done
+    
+    echo ""
+    
+    # Recent blocked URIs
+    printf "%s\n" "${GREEN}Recent blocked URIs for ${domain}:${NC}"
+    echo "$domain_data" | grep '\[uri "' | \
+        sed 's/.*\[uri "\([^"]*\)"\].*/\1/' | \
+        tail -10 | \
+        while read -r uri; do
+            printf "  %s\n" "${YELLOW}${uri}${NC}"
+        done
+}
+
+_select_domain_for_analysis() {
+    domain=""
+    if [[ "$(ls -A "${USER_DIR}")" ]]; then
+        domains=()
+        echo "Select domain for analysis:"
+        _cd_dir "${USER_DIR}"
+        for entry in .*.conf; do
+            domain_check=${entry/./}
+            domain_check=${domain_check//.conf/}
+            if [ "$domain_check" != '*' ]; then
+                domains+=("${domain_check}")
+            fi
+        done
+        
+        if [ ${#domains[@]} -eq 0 ]; then
+            ALERT=$(printf "%s\n" "${RED}No domains found.${NC}")
+        else
+            PS3="${INPUT_SELECT} [0 = Cancel]: "
+            select opt in "${domains[@]}"; do
+                domain=$opt
+                break
+            done
+        fi
+    else
+        ALERT=$(printf "%s\n" "${RED}${EMPTY_DOMAIN}${NC}")
+    fi
+}
+
+# Main execution
+clear
+printf "%s\n" "${GREEN}WAF Log Analysis${NC}"
+printf "%s\n" "${GREEN}================${NC}"
+echo ""
+
+# Check if ModSecurity is installed
+_check_modsecurity_installed
+
+# Initialize variables
+ALERT=""
+domain=""
+action=""
+
+# Select action
+_select_log_action
+
+if [[ -z "${action}" || "${action}" == "cancel" ]]; then
+    clear
+    printf "%s\n" "${RED}Operation cancelled.${NC}"
+else
+    case "${action}" in
+        "realtime")
+            _realtime_monitoring
+            ;;
+        "summary")
+            _blocked_requests_summary
+            ;;
+        "top_ips")
+            _top_attacking_ips
+            ;;
+        "top_rules")
+            _most_triggered_rules
+            ;;
+        "domain_analysis")
+            _select_domain_for_analysis
+            if [[ -z "${domain}" && -z "${ALERT}" ]]; then
+                clear
+                printf "%s\n" "${RED}Operation cancelled.${NC}"
+            else
+                if [ -z "${ALERT}" ]; then
+                    _domain_specific_analysis
+                else
+                    clear
+                    printf "%s\n" "${ALERT}"
+                fi
+            fi
+            ;;
+    esac
+fi
+
+echo ""
+printf "%s\n" "Press any key to return to WAF menu..."
+read -n 1 -s
+
+menu_waf
