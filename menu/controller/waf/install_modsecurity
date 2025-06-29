@@ -55,7 +55,7 @@ _download_modsecurity() {
     
     # Download ModSecurity
     if [ ! -d "ModSecurity" ]; then
-        git clone --depth 1 https://github.com/SpiderLabs/ModSecurity.git
+        git clone --depth 1 https://github.com/owasp-modsecurity/ModSecurity.git
     fi
     
     cd ModSecurity
@@ -76,7 +76,7 @@ _download_modsecurity_nginx_connector() {
     
     # Download ModSecurity-nginx connector
     if [ ! -d "ModSecurity-nginx" ]; then
-        git clone --depth 1 https://github.com/SpiderLabs/ModSecurity-nginx.git
+        git clone --depth 1 https://github.com/owasp-modsecurity/ModSecurity-nginx.git
     fi
 }
 
